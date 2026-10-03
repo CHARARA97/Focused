@@ -1,0 +1,20 @@
+[Unit]
+Description=Focused - suspend distracting applications while you focus
+Documentation=file:%h/Documents/deepseek-harness/default-workspace/chillfocus/docs/focused.md
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/focusedd --config %h/.config/focused/config.json
+# Crash safety net: systemd runs this even when the daemon is killed outright, so
+# a suspended application cannot outlive the process that suspended it.
+ExecStopPost=%h/.local/bin/focusedd --config %h/.config/focused/config.json --thaw-all
+Restart=on-failure
+RestartSec=5
+# Focused only ever suspends processes of the same user; keep its own nice level
+# so freezing a heavy application cannot make the desktop sluggish.
+Nice=5
+
+[Install]
+WantedBy=default.target

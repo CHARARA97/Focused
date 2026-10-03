@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Fields the game plugin binds from GET /api/v1/focus and /api/v1/processes.",
+    "Generated from the plugin's Core/FocusedProtocol.cs; every field the plugin",
+    "declares MUST exist in the payload, and the payload MUST stay flat, because",
+    "Unity's JsonUtility binds public fields and primitive arrays only -- a nested",
+    "object arrives null with no error.  When the plugin's DTO changes, update this",
+    "file in the same pull request."
+  ],
+  "focus": [
+    "ok",
+    "version",
+    "pid",
+    "active",
+    "paused",
+    "pause_until",
+    "since",
+    "dry_run",
+    "manual_session",
+    "delegated",
+    "delegated_active",
+    "delegated_source",
+    "frozen_count",
+    "frozen_total",
+    "frozen_names",
+    "frozen_units",
+    "recent_names",
+    "url_patterns",
+    "protect_count"
+  ],
+  "processes": [
+    "ok",
+    "names",
+    "counts",
+    "protected_flags",
+    "protect_rules"
+  ]
+}

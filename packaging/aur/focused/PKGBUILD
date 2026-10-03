@@ -1,0 +1,37 @@
+# Maintainer: CHARARA97 <CHARARA97@outlook.com>
+pkgname=focused
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Suspend distracting applications while you focus, and resume them after"
+arch=('any')
+url="https://github.com/CHARARA97/Focused"
+license=('MIT')
+depends=('python')
+makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/CHARARA97/Focused/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')   # replace with updpkgsums before pushing
+install="$pkgname.install"
+
+build() {
+  cd "focused-$pkgver"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "focused-$pkgver"
+  PYTHONPATH=. python -m unittest discover -s tests -t .
+}
+
+package() {
+  cd "focused-$pkgver"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+
+  # The systemd *user* unit, in the location packages use.  Enabling it is the
+  # user's decision: a package that starts a service on install is a package that
+  # suspends processes nobody asked it to touch yet.
+  install -Dm644 packaging/focused.service "$pkgdir/usr/lib/systemd/user/focused.service"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 docs/focused.md "$pkgdir/usr/share/doc/$pkgname/focused.md"
+}
