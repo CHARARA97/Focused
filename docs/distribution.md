@@ -2,6 +2,8 @@
 
 > 目标：**别人能在五分钟内装上并用起来**，每个组件走它自己最省事的渠道。
 > 本文是实施前的规划 + AUR 打包的完整步骤（依据 Arch 官方文档，见文末引用）。
+> **现状**：AUR 关闭新用户注册（2026 年恶意提交事件后），因此后端暂以 GitHub Release 分发；
+> PKGBUILD 已通过 `makepkg` 实测，等注册恢复后直接按 §3 提交。
 
 ---
 
@@ -31,7 +33,7 @@
 
 | 组件 | 主渠道 | 备用 / 补充 |
 |---|---|---|
-| **Focused 后端**（Python，systemd user 服务） | **AUR `focused`**（Arch 用户 `yay -S focused`） | **PyPI `focusd`** → `uv tool install focusd` / `pipx install focusd`（所有发行版）；GitHub Release 的 wheel/sdist；仓库里的 `install.sh`（不依赖包管理器） |
+| **Focused 后端**（Python，systemd user 服务） | **GitHub Release**（wheel + sdist + `install.sh`）；AUR `focused` / `focused-git` 已就绪，**待 AUR 恢复注册**后提交 | **PyPI `focusd`** → `uv tool install focusd` / `pipx install focusd`（所有发行版）；GitHub Release 的 wheel/sdist；仓库里的 `install.sh`（不依赖包管理器） |
 | **ChillFocused 游戏插件**（BepInEx mod） | **GitHub Release 只放一个 `ChillFocused.dll`** + `scripts/install-bepinex.sh`（`--dll <路径\|URL>` + sha256 校验 + 清理旧位置 + 结尾自检） | 可选 AUR 助手包（只装到 `/usr/share`，由用户运行 helper 复制进游戏目录）；Nexus Mods；Thunderstore 需先申请社区（且它无法携带后端依赖） |
 | **Focused 浏览器扩展**（MV3） | **Chrome Web Store**（自动更新，用户一键装） | Release 里的 zip + 「加载已解压的扩展程序」；可选 AUR 包把解压目录装到 `/usr/share/focused-extension/` |
 | 文档 / 变更 | 仓库 `README.md`、`CHANGELOG.md`、`docs/` | 每个 Release 的说明 |

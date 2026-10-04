@@ -1,9 +1,10 @@
 # Focused
 
-**开启专注模式时挂起冻结名单中的应用，结束后恢复。**
+**专注时把打扰你的应用挂起来，结束后原样恢复。**
 
 Focused 是一个独立的后端应用：它读 `/proc`、按规则查找应用、把它们**冻结**（`SIGSTOP` 或
-cgroup v2 的 `cgroup.freeze`），并在专注结束时**原样恢复**。它不依赖前端，自带看板、命令行和 HTTP API，两个前端（游戏插件、浏览器扩展）都连它：
+cgroup v2 的 `cgroup.freeze`），并在专注结束时**原样恢复**。它不依赖游戏，也不需要浏览器
+—— 自带看板、命令行和 HTTP API，两个前端（游戏插件、浏览器扩展）都连它：
 
 | 组件 | 仓库 |
 |---|---|
@@ -34,26 +35,35 @@ cgroup v2 的 `cgroup.freeze`），并在专注结束时**原样恢复**。它�
 
 ## 安装
 
-### Arch Linux（AUR）
+### 一行安装（任意发行版）
 
 ```bash
-yay -S focused            # 或 focused-git 跟踪 main 分支
+curl -fsSL https://github.com/CHARARA97/Focused/releases/latest/download/install.sh | sh
 systemctl --user enable --now focused
 xdg-open http://127.0.0.1:8766/
 ```
 
-### 其他发行版
+该脚本从 Release 取出 wheel 并解包到 `~/.local/share/focused/app`，同时写好启动器、自检脚本与
+systemd 用户单元；不需要 pip，也不需要虚拟环境。
+
+### Arch Linux
+
+`packaging/aur/` 下的 `focused` 与 `focused-git` 已就绪，但 AUR 目前关闭新用户注册，
+因此尚未提交。可以先从仓库本地构建：
 
 ```bash
-# 一行安装：下载 Release 里的 wheel，建 venv，写启动器与 systemd user 单元
-curl -fsSL https://github.com/CHARARA97/Focused/releases/latest/download/install.sh | sh
+git clone https://github.com/CHARARA97/Focused
+cd Focused/packaging/aur/focused
+updpkgsums && makepkg -si
+systemctl --user enable --now focused
 ```
 
-或者自己来（纯标准库，无运行时依赖）：
+### 用 uv 或 pipx 安装
 
 ```bash
 uv tool install "focusd @ https://github.com/CHARARA97/Focused/releases/latest/download/focusd-0.1.0-py3-none-any.whl"
-# 或从源码： uv tool install git+https://github.com/CHARARA97/Focused
+# 或从源码：
+uv tool install git+https://github.com/CHARARA97/Focused
 focusedd --write-default-config ~/.config/focused/config.json
 focusedd
 ```
@@ -211,6 +221,7 @@ scripts/run-tests.sh --offline   # 无网络时用本地包缓存
 ## 发布
 
 维护者发布流程（构建、Release 资产、AUR）见 [docs/releasing.md](docs/releasing.md)。
+AUR 的 `focused` / `focused-git` 包已就绪，但 AUR 目前关闭新用户注册，暂未提交。
 
 ## 许可
 

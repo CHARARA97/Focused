@@ -61,7 +61,10 @@ gh release create v0.1.0 dist/release/* dist/*.whl dist/*.tar.gz \
 curl -fsSL https://github.com/CHARARA97/Focused/releases/latest/download/install.sh | sh
 ```
 
-## 4. AUR
+## 4. AUR（待注册开放）
+
+AUR **目前关闭新用户注册**（2026 年恶意提交事件后 Arch 侧收紧），因此这一节暂时无法执行。
+PKGBUILD 已就绪并通过 `makepkg` 实测；等注册开放后，注册账号、把 SSH 公钥填进 AUR 账号设置，再按下面执行。
 
 AUR 需要**网络**（`makepkg` 要下载 tag 归档）且必须在 GitHub 标签存在之后进行：
 
@@ -79,3 +82,11 @@ cd /tmp/aur-focused && git add -A && git commit -m "0.1.0-1" && git push
 ```
 
 `focused-git` 同理，包名换成 `focused-git`，不需要 `.install`。
+
+### PKGBUILD 为什么用 `noextract` + `prepare()`
+
+GitHub 的归档解出来的顶层目录是 `<仓库名>-<tag 去掉 v>`，即 `Focused-0.1.0`，而包名是
+`focused`。与其在 `build()/check()/package()` 里猜目录名，PKGBUILD 自己用
+`bsdtar --strip-components=1` 解到固定的 `$srcdir/src`，因此仓库改名或 tag 格式变化都不会
+再让它失败。`makepkg` 生成的 `src/`、`pkg/` 是构建残留，可以随时删除。
+
