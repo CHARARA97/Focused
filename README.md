@@ -1,10 +1,8 @@
 # Focused
 
-**专注时把打扰你的应用挂起来，结束后原样恢复。**
+**开启专注模式时将屏蔽名单中的进程挂起，结束后恢复。**
 
-Focused 是一个独立的后端应用：它读 `/proc`、按规则查找应用、把它们**冻结**（`SIGSTOP` 或
-cgroup v2 的 `cgroup.freeze`），并在专注结束时**原样恢复**。它不依赖游戏，也不需要浏览器
-—— 自带看板、命令行和 HTTP API，两个前端（游戏插件、浏览器扩展）都连它：
+Focused 是一个独立的后端应用：它会读取 `/proc`、按规则查找应用、将它们**冻结**（`SIGSTOP` 或cgroup v2 的 `cgroup.freeze`），并在专注结束时**恢复**。它自带看板、命令行和 HTTP API。目前有两个前端插件：
 
 | 组件 | 仓库 |
 |---|---|
@@ -12,19 +10,16 @@ cgroup v2 的 `cgroup.freeze`），并在专注结束时**原样恢复**。它�
 | 游戏插件（《放松时光：与你共享 Lo-Fi 故事》的 BepInEx Mod） | [chillfocused](https://github.com/CHARARA97/ChillFocused-Linux) |
 | 浏览器扩展（专注期间关标签页） | [focused-extension](https://github.com/CHARARA97/Focused-Extension) |
 
-> **动作只有一个：冻结。** 没有 kill 路径，没有"结束进程"开关；任何异常路径都会解冻
-> （租约到期、进程被杀、机器重启）。
-
 ---
 
 ## 目录
 
 - [安装](#安装)
-- [三分钟上手](#三分钟上手)
+- [快速上手](#快速上手)
 - [专注会话的两种模式](#专注会话的两种模式)
-- [看板](#看板)
+- [GUI](#GUI)
 - [配置](#配置)
-- [写一个插件](#写一个插件)
+- [编写插件](#编写插件)
 - [安全模型](#安全模型)
 - [命令行](#命令行)
 - [API](#api)
@@ -35,7 +30,7 @@ cgroup v2 的 `cgroup.freeze`），并在专注结束时**原样恢复**。它�
 
 ## 安装
 
-### 一行安装（任意发行版）
+### Shell安装
 
 ```bash
 curl -fsSL https://github.com/CHARARA97/Focused/releases/latest/download/install.sh | sh
@@ -46,16 +41,6 @@ xdg-open http://127.0.0.1:8766/
 该脚本从 Release 取出 wheel 并解包到 `~/.local/share/focused/app`，同时写好启动器、自检脚本与
 systemd 用户单元；不需要 pip，也不需要虚拟环境。
 
-### Arch Linux
-
-`packaging/aur/` 下的 `focused` 与 `focused-git` 已就绪，但 AUR 目前关闭新用户注册，
-因此尚未提交。可以先从仓库本地构建：
-
-```bash
-git clone https://github.com/CHARARA97/Focused
-cd Focused/packaging/aur/focused
-updpkgsums && makepkg -si
-systemctl --user enable --now focused
 ```
 
 ### 用 uv 或 pipx 安装
@@ -68,10 +53,9 @@ focusedd --write-default-config ~/.config/focused/config.json
 focusedd
 ```
 
-系统要求：Linux（用到 `/proc`、cgroup v2 与 `SIGSTOP`）、Python ≥ 3.9、systemd 用户会话。
-不需要 root。
+系统要求：Linux、Python ≥ 3.9、systemd 用户会话
 
-## 三分钟上手
+## 快速上手
 
 1. 打开 <http://127.0.0.1:8766/>
 2. 「应用名单」里搜索并勾选你不想被打扰时打开的应用
@@ -85,7 +69,7 @@ focusedd
 | 模式 | 行为 |
 |---|---|
 | **番茄钟** | 专注 / 休息交替；**仅专注阶段生效的** —— 休息时应用立刻恢复，休息结束时自动重新挂起进程。轮数 1 = 单次倒计时；轮数 0 = 重复循环；可「跳过休息」 |
-| **正向计时** | 开启专注模式直到人为停止 |
+| **正向计时** | 开启专注模式直到手动停止 |
 
 ## GUI
 
@@ -110,7 +94,7 @@ focusedd
   "scan_interval": 1.0,
   "dry_run": false,                    // true = 只记录，不冻结
   "blacklist": { "names": ["firefox"], "cmdline_substrings": [], "pids": [] },
-  "protect":   { "names": [], "cmdline_substrings": [] },   // 只增
+  "protect":   { "names": [], "cmdline_substrings": [] },
   "freeze":    { "enabled": true, "max_per_scan": 20, "use_units": true,
                  "state_path": "~/.local/share/focused/frozen.json" },
   "session":   { "mode": "pomodoro", "default_minutes": 25, "pause_minutes": 10,
@@ -124,7 +108,7 @@ focusedd
 额外保护名单：`~/.config/focused/protect_names.txt`（每行一个名字）。数据在
 `~/.local/share/focused/`：`frozen.json`（冻结记录）、`plugins.json`（插件注册表）、`audit.jsonl`。
 
-## 为其编写插件
+## 编写插件
 
 ```bash
 # 1) 注册，拿到自己的 id 与令牌
@@ -142,7 +126,7 @@ curl -s -X POST http://127.0.0.1:8766/api/v1/plugins/pomodoro/session \
      -d '{"active":true,"ttl_seconds":30}'
 ```
 
-需要更深的能力（在扫描里做判断、冻结时处理其他事务）可以写**进程内 Python 插件**，放在
+如需要更深的能力（在扫描里做判断、冻结时处理其他事务）可以写**进程内 Python 插件**，放在
 `~/.config/focused/plugins/*.py`，实现 `register(focused)` 与 `on_event(focused, event)`；
 加载失败或反复抛异常会被记事件并在连续 5 次失败后自动禁用，绝不影响主循环。
 完整说明见 [docs/focused.md](docs/focused.md)。
@@ -165,7 +149,7 @@ curl -s -X POST http://127.0.0.1:8766/api/v1/plugins/pomodoro/session \
 | 插件反复报错 | 记事件、计数、连续 5 次失败自动禁用 |
 
 HTTP API 默认只绑 `127.0.0.1`；配置 `http.token` 后所有请求都要带 `X-Focused-Token`。
-**不要把它暴露到公网**：这个 API 能挂起你机器上的进程。
+**切记不要把它暴露到公网**：这个 API 能挂起你机器上的进程。
 
 ## 命令行
 
@@ -220,11 +204,9 @@ scripts/run-tests.sh --offline   # 无网络时用本地包缓存
 
 ## 发布
 
-维护者发布流程（构建、Release 资产、AUR）见 [docs/releasing.md](docs/releasing.md)。
+维护者发布流程（构建、Release 资产、AUR等）见 [docs/releasing.md](docs/releasing.md)。
 AUR 的 `focused` / `focused-git` 包已就绪，但 AUR 目前关闭新用户注册，暂未提交。
 
 ## 许可
 
 MIT。详见 [LICENSE](LICENSE)。
-
-> 它会**挂起**你指定的进程；虽然所有异常路径都会尝试恢复，请先用「只记录，不冻结」确认名单正确。
