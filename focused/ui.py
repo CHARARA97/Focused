@@ -119,7 +119,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </nav>
 
   <section id="tab-overview" class="active">
-    <div class="banner" id="dryBanner" style="display:none">当前为「只记录，不冻结」：命中名单的进程不会被挂起。</div>
+    <div class="banner" id="dryBanner" style="display:none">当前为「仅记录，不冻结」：命中名单的进程不会被挂起。</div>
     <div class="card">
       <h2>专注会话</h2>
       <div class="clock" id="clock">未生效 · 未开始专注</div>
@@ -278,7 +278,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <section id="tab-settings">
     <div class="card">
       <h2>运行设置</h2>
-      <div class="row"><label><input type="checkbox" id="setDryRun" /> 只记录，不冻结（不挂起任何应用）</label></div>
+      <div class="row"><label><input type="checkbox" id="setDryRun" /> 仅记录，不冻结（不挂起任何应用）</label></div>
       <div class="row" style="margin-top:10px">
         <label style="flex:1">默认模式
           <select id="setSessionMode">
