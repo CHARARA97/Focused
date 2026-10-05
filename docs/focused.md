@@ -1,7 +1,7 @@
 # Focused —— 独立的专注应用
 
-> 一句话：**它就是那个"发现打扰你的应用，然后把它挂起来"的本体程序**，
-> 可以完全脱离游戏和浏览器单独使用，也对外开放接口让你（或别人）写小插件接进来。
+> **Focused 是负责发现并挂起干扰性应用的本体程序**，
+> 可独立于游戏与浏览器使用，并对外开放接口，供第三方编写插件接入。
 
 当前形态（[设计文档见 focused-design.md](focused-design.md)）：
 
@@ -10,7 +10,7 @@
         │                                          │
 浏览器扩展 Focused ─────────────────────►  Focused（后端应用）
         │                                          │
-        └── 你自己的小插件（任何语言 / HTTP）──────┘
+        └── 第三方插件（任何语言 / HTTP）────────┘
                                                    │
                               看板 http://127.0.0.1:8766/ · CLI focusedd
 ```
@@ -61,9 +61,9 @@ systemctl --user status focused        # 看状态
 两个细节：
 
 - **放行不吃专注时间**：点「放行 5 分钟」时会把当前阶段的截止时间往后推 5 分钟——
-  休息是你的，不该从专注里扣。
+  休息不应计入专注时长。
 - **休息 = 解冻**：番茄钟的休息阶段 `active` 为 false，所以被挂起的应用会回来、
-  浏览器扩展也会放行标签页；下一轮开始再冻上。
+  浏览器扩展同样恢复标签页；下一轮开始时重新冻结。
 
 API：
 
@@ -134,7 +134,7 @@ kill -USR1 <pid>                   # 紧急全部恢复
 curl -s -X POST http://127.0.0.1:8766/api/v1/plugins/register \
      -H 'Content-Type: application/json' -d '{"name":"pomodoro"}' | jq
 
-# 2) 贡献规则（只影响你自己那份）
+# 2) 提交规则（仅影响本来源）
 curl -s -X PUT http://127.0.0.1:8766/api/v1/plugins/pomodoro/rules \
      -H "X-Focused-Token: $TOKEN" -H 'Content-Type: application/json' \
      -d '{"names":["firefox"],"cmdline_substrings":["--distract"],"url_patterns":["reddit.com"]}'
@@ -168,7 +168,7 @@ def on_event(focused, event):                      # 每次事件回调，别阻
 **隔离**：加载失败或反复抛异常 → 记事件、标记 failed、连续 5 次失败自动禁用，绝不影响主循环。
 进程内插件与 Focused 同权限（完全信任）；不信任的请写 HTTP 插件。
 
-## 7. 保护性兜底（为什么它不会把你的应用冻丢）
+## 7. 保护性兜底（进程不会滞留在冻结状态）
 
 | 场景 | 兜底 |
 |---|---|

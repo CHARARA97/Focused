@@ -442,7 +442,7 @@ SIGTERM ──(grace_seconds, 默认 3s)──► 仍在 → SIGKILL ──(1s)�
 
 存档轮询的延迟是结构性的：游戏每 6~15 秒才写一次盘。要即时，就必须在游戏进程内读状态。
 
-一开始我判断「插件读不到游戏状态」，依据是几个 Harmony 补丁装上后从未触发。但那是**目标选错了**：
+最初判断「插件无法读取游戏状态」，依据是多个 Harmony 补丁安装后从未触发；实际原因是**补丁目标选择错误**：
 补丁挂在 `Bulbul.CurrentDateAndTimeUI.UpdateDateAndTime` 上，而这个方法根本没被调用。
 把游戏自己的类型清单 dump 出来之后（`GameProbe.DumpApi`，从已验证会触发的主线程泵里执行），
 `Bulbul.PomodoroService` / `CountupTimerService` / `TimerCoreService` 这些服务及其

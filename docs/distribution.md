@@ -1,6 +1,6 @@
 # 开源与分发规划
 
-> 目标：**别人能在五分钟内装上并用起来**，每个组件走它自己最省事的渠道。
+> 目标：**用户可在五分钟内完成安装并开始使用**；每个组件选择成本最低的分发渠道。
 > 本文是实施前的规划 + AUR 打包的完整步骤（依据 Arch 官方文档，见文末引用）。
 > **现状**：AUR 关闭新用户注册（2026 年恶意提交事件后），因此后端暂以 GitHub Release 分发；
 > PKGBUILD 已通过 `makepkg` 实测，等注册恢复后直接按 §3 提交。
@@ -25,7 +25,7 @@
 | AUR 包名 | ✅ `focused` / `focused-git` / `chillfocused` 均未被占用 |
 | Thunderstore 社区 | ❌ 该游戏**没有社区**（平台按游戏开版，目前只有另一个 "Cast n Chill"） |
 
-> ⚠️ **隐私红线**：`.backup/config-*/` 里是你这台机器的真实配置（`~/.config/chillfocus/config.json`、游戏的 `com.chillfocused.*.cfg`），第一次 `git add` 前必须确认它们被忽略，否则会公开你的黑名单与保护名单。已在 `.gitignore` 里加上 `.backup/` 与 `.tmp/`。
+> ⚠️ **隐私红线**：`.backup/config-*/` 里是本机的真实配置（`~/.config/chillfocus/config.json`、游戏的 `com.chillfocused.*.cfg`），第一次 `git add` 前必须确认它们被忽略，否则会公开本机的屏蔽名单与保护名单。已在 `.gitignore` 里加上 `.backup/` 与 `.tmp/`。
 
 ---
 
@@ -74,7 +74,7 @@ chillfocused/                     ← GitHub 仓库名（建议）
 - **一个 pkgbase 一个 git 仓库**，只允许 `master` 分支；推送必须包含 `PKGBUILD` 与 `.SRCINFO`。
 - 命名：**发布版本包不加后缀**（`focused`），**跟仓库走的包加 `-git`**（`focused-git`），预编译二进制加 `-bin`。
 - 每条提交**必须更新 `pkgver` 或 `pkgrel`**（只有拼写修正才不更新）；`-git` 包**不要**因为上游有新提交就 bump。
-- 提交信息里不能只有版本号刷屏；**提交者信息用的是你本机 git 的姓名邮箱**，AUR 上很难改。
+- 提交信息里不能只有版本号刷屏；**提交者信息取自本机 git 配置的姓名与邮箱**，AUR 上难以修改。
 - 只支持 `x86_64`；不得打包官方仓库里已有的软件；不得用 `replaces`（改用 `conflicts`/`provides`）。
 - **包源码本身**（PKGBUILD 等）按 Arch 规定应使用 **0BSD** 并配 `LICENSE`/`REUSE.toml`；而 `license=()` 里写的是**上游软件**的许可证，必须是 SPDX 标识符。
 - 官方明确警告：**自动化更新账号出问题会被直接删包**，必须人工过一遍每次上游变更。
@@ -144,7 +144,7 @@ pre_remove()   { systemctl --user stop focused.service 2>/dev/null || true; }
 ```
 
 > 单元文件里应当有 `ExecStopPost=/usr/bin/focusedd --config %h/.config/focused/config.json --thaw-all` ——
-> 这是"崩溃也能放人"的兜底，AUR 版必须保留。
+> 这是「崩溃后仍可恢复」的兜底机制，AUR 包必须保留。
 
 ### 3.3 `focused-git` 变体
 
@@ -276,7 +276,7 @@ git push
 
 ---
 
-## 7. 许可证选择（需要你定）
+## 7. 许可证选择（待定）
 
 | 选项 | 适合 | 代价 |
 |---|---|---|
@@ -284,7 +284,7 @@ git push
 | **Apache-2.0** | 同 MIT，但含专利授权与 NOTICE 条款 | 文件更长，需带 NOTICE |
 | **GPL-3.0-or-later** | 想强制衍生作品也开源 | 与部分生态（如某些 mod 平台）兼容性差 |
 
-- 注意：**AUR 上的 `PKGBUILD` 等包源码**按 Arch 规范用 **0BSD**（与你的上游许可无关），所以 `packaging/aur/*` 里会放一份 0BSD 的 `LICENSE`。
+- 注意：**AUR 上的 `PKGBUILD` 等包源码**按 Arch 规范用 **0BSD**（与上游项目的许可无关），所以 `packaging/aur/*` 里会放一份 0BSD 的 `LICENSE`。
 - 建议三组件统一一个许可（简化心智与合规检查）；若插件想用不同许可（mod 生态常见 MIT），在 `plugin/` 下另放一份并说明即可。
 
 ---

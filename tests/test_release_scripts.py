@@ -66,6 +66,19 @@ class InstallerTests(unittest.TestCase):
 
         self.assertIn("kept existing config", script)
 
+    def test_the_packaged_unit_points_at_the_installed_launcher(self):
+        # This file is installed verbatim into /usr/lib/systemd/user/ by the AUR
+        # package, so it must not carry the ~/.local layout (or a path from whoever
+        # generated it): a unit that cannot exec its binary leaves the service in an
+        # auto-restart loop.
+        unit = read(os.path.join(REPO, "packaging", "focused.service"))
+
+        self.assertIn("ExecStart=/usr/bin/focusedd", unit)
+        self.assertIn("ExecStopPost=/usr/bin/focusedd", unit)
+        self.assertNotIn(".local/bin", unit)
+        self.assertNotIn("Documents/deepseek-harness", unit)
+        self.assertIn("Documentation=https://", unit)
+
     def test_the_service_unit_can_resume_after_a_crash(self):
         # systemd runs ExecStopPost even when the main process was killed: that is
         # what makes a suspended application unable to outlive Focused.

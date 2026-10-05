@@ -40,7 +40,7 @@
 `Bulbul.UnlockConditionService.IsUnlocked` 一直报
 `HarmonyException: IL Compile Error (unknown location)`。
 
-**每个补丁都要单独 `try/catch` 并记日志**：一个坏补丁抛出的异常会让你误判"整个插件没加载"。
+**每个补丁都要单独 `try/catch` 并记日志**：一个补丁抛出的异常会造成「整个插件未加载」的误判。
 
 ### 存档是完全可读的明文
 
@@ -100,7 +100,7 @@ Easy Save 3，**GZip + JSON，未加密**。宿主侧路径：
    不可见。只改 `verticalScrollbarThumb` 是安全的。这项实验已放弃，配置项默认关闭
    （`scrollbar.themed = 0`），**不要重开**。
 
-7. **`GUI.skin.xxx = myStyle` 是全局的**，能让游戏内所有按钮变成你的样式——
+7. **`GUI.skin.xxx = myStyle` 是全局设置**，会使游戏内所有按钮都采用该样式 ——
    威力大，影响面也大。
 
 8. **`BeginHorizontal` 按每个样式的 `margin.top` 对齐子控件。**
@@ -209,7 +209,7 @@ Easy Save 3，**GZip + JSON，未加密**。宿主侧路径：
 
 6. **命名要与配置键镜像。** `pad.state.top` ←→ `PadStateTop`。曾因命名不一致连续猜错锚点。
 
-7. **记录你验证不了的东西。** 交付说明里明确写"哪些改动未经验证"，用户才知道该重点看哪里。
+7. **记录无法验证的部分。** 交付说明中明确列出「未经验证的改动」，用户据此判断重点关注范围。
 
 8. **写"该杀 / 不该杀"的测试前，先确认测试进程自己没撞上护栏。** 保护名单匹配的是
    `comm` + `/proc/<pid>/exe` 的名字 + `argv[0]` 三者（`ProcessInfo.name_candidates()`），

@@ -23,7 +23,7 @@
 | **非目标** | 不做"冻久了自动关闭"（E1）· 不做每应用动作（C1→C2 之后再说）· 不做"不可绕过"的强制（那属于关闭模式）· 不用 `killpg` / `ptrace` / cgroup v1 |
 
 **为什么它值得做**：关闭会丢掉浏览器的标签、编辑器未保存的草稿、下载进度；冻结是可逆的暂停，
-"专注期间别打扰、结束后还给你"。代价见 §5 的风险清单。
+「专注期间不干扰，结束后恢复原状」。代价见 §5 的风险清单。
 
 ---
 
@@ -74,7 +74,7 @@
 |---|---|---|---|
 | **F1** | **冻结名单落盘**（`~/.local/share/chillfocus/frozen.json`：cgroup 路径 / unit / pid / starttime / since / reason） | 没有它，崩溃 = 永久挂起 | 设计 |
 | **F2** | **启动时孤儿解冻**（T4） | daemon 重启后先把上一轮的账还清，再谈冻结 | 设计 |
-| **F3** | **`ExecStopPost=/path/chillfocusd --thaw-all`** | **即使 daemon 被 SIGKILL 也能放人**：systemd 手册明确该指令在服务"异常退出"后仍会执行，且建议用它做"即使启动失败也要跑"的清理 | systemd.service(5)：*"…or where the service exited unexpectedly… recommended to use this setting for clean-up operations"* |
+| **F3** | **`ExecStopPost=/path/chillfocusd --thaw-all`** | **即使进程被 SIGKILL 也能恢复**：systemd 手册明确该指令在服务"异常退出"后仍会执行，且建议用它做"即使启动失败也要跑"的清理 | systemd.service(5)：*"…or where the service exited unexpectedly… recommended to use this setting for clean-up operations"* |
 | **F4** | **`SIGUSR1` = 紧急解冻** | daemon 卡在别处时，CLI 可能也卡；信号是最短路径 | 设计 |
 | **F5** | **`chillfocusd --thaw-all` 必须自足**：自己读 `frozen.json` → 写 `cgroup.freeze=0` / `SIGCONT`（校验 `(pid,starttime)`）→ 清空文件；**幂等**、**不依赖 daemon 进程**、**不依赖 systemd** | `ExecStopPost` 运行时主进程已经没了（手册也提醒"不要试图与它们通信"），所以这个命令不能走 HTTP API | 设计 + 手册 |
 | **F6** | （可选）`WatchdogSec=` + `sd_notify(WATCHDOG=1)` | daemon 假死（不是死）时由 systemd 重启它 → 走 F2 | 设计，可选 |
@@ -101,7 +101,7 @@
 | U1 | `/status` 暴露冻结清单：**并行基础类型数组**（`frozen_units[]` / `frozen_pids[]` / `frozen_since[]` / `frozen_reason[]` / `frozen_count`） | 响应 DTO 必须扁平（这是刚立并已由契约测试强制的规矩） |
 | U2 | HUD/面板显示"**已冻结 N**"，toast 提示"已冻结 firefox" / "已恢复 firefox" | 用户必须能发现"我的浏览器被冻了"，否则会以为系统坏了 |
 | U3 | `chillfocusd --frozen`（列出当前冻结）/ `--thaw-all` | 命令行自救入口 |
-| U4 | **`freeze.enabled=0` 立即解冻** | 不是"以后不冻"，是"马上放人" |
+| U4 | **`freeze.enabled=0` 立即解冻** | 不是「此后不再冻结」，而是「立即恢复」 |
 | U5 | `reload_config` 后不再匹配的条目**立刻解冻** | 配置改了要马上生效 |
 | U6 | 审计/事件新增 `frozen` / `thawed` / `thaw-failed`，含 unit/pid/starttime/原因 | 事后能回答"谁冻的、为什么、什么时候" |
 
@@ -271,10 +271,10 @@ freeze_preview_reasons[]  freeze_preview_trees[]
 
 ---
 
-## 9. 我方补充的三条（你没勾但建议必须有的）
+## 9. 补充要求（未列入选项但必须满足）
 
-1. **T2 自救入口**（`--thaw-all` / `SIGUSR1` / `freeze.enabled=0` 立即解冻）。你只选了 T1 与 T4；
-   没有 T2，daemon 卡住而没死时你只能注销会话。
-2. **F3 `ExecStopPost` 兜底**：这是唯一能在 **daemon 被 SIGKILL** 后仍然放人的机制，成本是 unit 里一行。
+1. **T2 自救入口**（`--thaw-all`、`SIGUSR1`、`freeze.enabled=0` 立即恢复）。先前只选定 T1 与 T4；
+   缺少 T2 时，若进程卡住但未退出，只能注销会话。
+2. **F3 `ExecStopPost` 兜底**：这是唯一能在**进程被 SIGKILL**后仍然恢复的机制，成本为 unit 文件中的一行。
 3. **§4.6 合成器准入门槛**：冻结图形客户端在这台机器上可能导致 **niri/Xwayland 卡住**（机制上完全可能），
    必须先测；否则"冻结"可能比"关闭"更伤。

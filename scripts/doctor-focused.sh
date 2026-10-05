@@ -38,10 +38,48 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; OK=$((OK + 1)); }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; WARN=$((WARN + 1)); }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; BAD=$((BAD + 1)); }
 fix()  { printf '      %s\n' "$1"; }
-head_() { printf '\n%s\n' "$1"; }
+
+# --- progress ---------------------------------------------------------------
+#
+# The check walks a fixed list of sections, so the bar counts sections: it opens at
+# 0% and closes at 100%, one line per section.  A bar that rewrote itself on one
+# line would be erased by the section's own output, and a bar is worthless in a log
+# file -- the section name is on every line, so a redirected report stays readable.
+
+TOTAL_STEPS=6
+STEP=0
+BAR_WIDTH=24
+
+# fill <count> <char> -- repeated character, without tr: tr maps one byte per
+# input character, so a multi-byte glyph such as █ would come out as mojibake.
+fill() {
+    printf '%*s' "$1" '' | sed "s/ /$2/g"
+}
+
+bar_line() {
+    local percent="$1" label="$2" filled empty
+
+    # A bar belongs on a terminal.  In a pipe or a log file it is noise, so the
+    # plain label is printed instead and a saved report stays readable.
+    if [ ! -t 1 ]; then
+        printf '\n%s\n' "${label%"${label##*[! ]}"}"
+        return
+    fi
+
+    filled=$(( percent * BAR_WIDTH / 100 ))
+    empty=$(( BAR_WIDTH - filled ))
+    printf '\n\033[36m[%s%s]\033[0m %3d%%  %s\n' \
+        "$(fill "$filled" '█')" "$(fill "$empty" '░')" "$percent" "$label"
+}
+
+step() {
+    bar_line $(( STEP * 100 / TOTAL_STEPS )) "$(printf '%-40s %d/%d' "$1" "$STEP" "$TOTAL_STEPS")"
+    STEP=$(( STEP + 1 ))
+}
 
 # --- 1. the backend ---------------------------------------------------------
-head_ "1. 后端 / backend"
+bar_line 0 "$(printf '%-40s %d/%d' "自检开始 / self-check" 0 "$TOTAL_STEPS")"
+step "1. 后端 / backend"
 
 FOCUSED_URL="http://127.0.0.1:8766"
 BACKEND_JSON="$(curl -fsS -m 2 "$FOCUSED_URL/api/v1/focus" 2>/dev/null || true)"
@@ -55,7 +93,7 @@ else
 fi
 
 # --- 2. the game ------------------------------------------------------------
-head_ "2. 游戏目录 / game directory"
+step "2. 游戏目录 / game directory"
 
 if [ -z "$GAME_DIR" ]; then
     for vdf in \
@@ -90,7 +128,7 @@ fi
 PLUGINS="$GAME_DIR/BepInEx/plugins"
 
 # --- 3. BepInEx -------------------------------------------------------------
-head_ "3. BepInEx"
+step "3. BepInEx"
 
 if [ -n "$GAME_DIR" ] && [ -f "$GAME_DIR/winhttp.dll" ] && [ -d "$GAME_DIR/BepInEx/core" ]; then
     ok "BepInEx is installed in the game"
@@ -121,7 +159,7 @@ else
 fi
 
 # --- 4. the mod -------------------------------------------------------------
-head_ "4. 插件 / the mod"
+step "4. 插件 / the mod"
 
 # Two copies mean the mod runs twice: BepInEx loads every DLL under plugins/,
 # subdirectories included.
@@ -152,7 +190,7 @@ elif [ "${#COPIES[@]}" -eq 1 ]; then
 fi
 
 # --- 5. the log -------------------------------------------------------------
-head_ "5. 日志 / the log file"
+step "5. 日志 / the log file"
 
 LOG="$GAME_DIR/BepInEx/LogOutput.log"
 if [ -n "$GAME_DIR" ] && [ -f "$LOG" ]; then
@@ -178,7 +216,7 @@ else
 fi
 
 # --- 6. plugin <-> backend agreement ---------------------------------------
-head_ "6. 两端是否对得上 / plugin and backend agreement"
+step "6. 两端是否对得上 / plugin and backend agreement"
 
 CONFIG="$GAME_DIR/BepInEx/config/com.chillfocused.plugin.cfg"
 PLUGIN_URL=""
@@ -219,6 +257,7 @@ else
 fi
 
 # --- summary ----------------------------------------------------------------
+bar_line 100 "$(printf '%-40s %d/%d' "自检完成 / self-check complete" "$TOTAL_STEPS" "$TOTAL_STEPS")"
 printf '\n%s\n' "小结 / summary: $OK ok, $WARN warning(s), $BAD problem(s)"
 if [ "$BAD" -eq 0 ]; then
     printf '%s\n' "链路看起来是通的。打开 http://127.0.0.1:8766/ ，开始一轮专注，看「概览」里出现已冻结的应用即可。"

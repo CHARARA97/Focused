@@ -1,20 +1,27 @@
 [Unit]
 Description=Focused - suspend distracting applications while you focus
-Documentation=file:%h/Documents/deepseek-harness/default-workspace/chillfocus/docs/focused.md
+Documentation=https://github.com/CHARARA97/Focused/blob/main/docs/focused.md
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/focusedd --config %h/.config/focused/config.json
-# Crash safety net: systemd runs this even when the daemon is killed outright, so
+# Distribution package: the launcher is /usr/bin/focusedd.  The installer that
+# writes into ~/.local generates its own unit with that layout instead; this file is
+# what packaging/aur/*/PKGBUILD installs verbatim.
+ExecStart=/usr/bin/focusedd --config %h/.config/focused/config.json
+# Crash safety net: systemd runs this even when the process is killed outright, so
 # a suspended application cannot outlive the process that suspended it.
-ExecStopPost=%h/.local/bin/focusedd --config %h/.config/focused/config.json --thaw-all
+ExecStopPost=/usr/bin/focusedd --config %h/.config/focused/config.json --thaw-all
 Restart=on-failure
 RestartSec=5
-# Focused only ever suspends processes of the same user; keep its own nice level
-# so freezing a heavy application cannot make the desktop sluggish.
+# Focused only ever suspends processes of the same user; keep its own nice level so
+# freezing a heavy application cannot make the desktop sluggish.
 Nice=5
+
+# Focused only ever signals processes of the same user, so it needs no privileges.
+# Do NOT add ProtectProc=invisible or ProcSubset=pid here: hiding /proc would leave
+# it with nothing to look at.
 
 [Install]
 WantedBy=default.target

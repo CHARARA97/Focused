@@ -43,7 +43,7 @@ X-Focused-Token: <token>        # 仅在配置了 token 时发送
 
 > **浏览器黑名单归客户端所有**：扩展的设置页里有自己的 `extra_patterns`，与这里下发的
 > `url_patterns` **取并集**（服务器在前、本地在后，大小写不敏感去重），白名单（`whitelist`）
-> 优先于两者。因此"只在浏览器里维护名单"和"由 Focused 统一下发"两种用法都能工作；
+> 优先于两者。因此「仅在浏览器中维护名单」与「由 Focused 统一下发」两种用法均可工作；
 > 游戏插件不参与这份名单。
 
 **匹配规则**（两侧实现必须一致；Python 见 `focused/focused/core/urlfilter.py`，JS 见
@@ -138,7 +138,7 @@ GET /api/v1/focus/frozen
 
 ## 3. 冻结实现的最低要求（给 Focused 的清单）
 
-ChillFocus 的守护进程已经踩过这些坑，Focused 实现时可以少走一遍：
+早期前端实现遇到过以下问题，Focused 实现时可直接规避：
 
 1. **落盘再动手**：冻结前先把"我冻了谁"写进状态文件；崩溃后靠它解冻（`frozen.json`）。
 2. **PID 复用防护**：解冻前必须核对 `starttime`（`/proc/<pid>/stat` 第 22 字段）。PID 可能已经被
