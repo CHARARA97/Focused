@@ -51,3 +51,7 @@ packaging/aur/**/pkg/
 packaging/aur/**/*.tar.gz
 packaging/aur/**/*.pkg.tar.*
 packaging/aur/**/.SRCINFO
+
+# Source archives made for AUR builds
+*.tar.gz
+*.pkg.tar.*

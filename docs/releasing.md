@@ -29,6 +29,21 @@ HOME="$TMP" "$TMP/.local/bin/focusedd" --version
 rm -rf "$TMP"
 ```
 
+### 改了仓库里的源码之后
+
+必须先提交，再用**当前 HEAD** 重新生成归档并刷新校验和 —— `makepkg` 用的是归档，不是你的工作树：
+
+```bash
+cd /path/to/the/repository
+git add -A && git commit -m "..."
+git archive --format=tar.gz --prefix=focused-0.1.0/ \
+    -o packaging/aur/focused/focused-0.1.0.tar.gz HEAD
+cd packaging/aur/focused && updpkgsums && makepkg --printsrcinfo > .SRCINFO
+```
+
+忽略这一步的典型症状：`check()` 报某个脚本不存在，或者装出来的包缺少你刚改的东西
+（`git archive HEAD` 读的是提交，不是工作区）。PKGBUILD 的 `check()` 会在归档过旧时直接报错并给出上面这段命令。
+
 ## 3. 打标签并发布
 
 发布资产使用**稳定文件名**，这样 `releases/latest/download/<名字>` 永远有效

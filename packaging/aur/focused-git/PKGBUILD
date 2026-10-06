@@ -29,8 +29,26 @@ build() {
 }
 
 check() {
-  cd focused
-  PYTHONPATH=. python -m unittest discover -s tests -t .
+  cd "$srcdir/focused"
+
+  # A source archive older than the repository is worse than a failing build: it
+  # would package code that no longer exists.  Say exactly what to do instead.
+  if [ ! -f scripts/test-runner.py ]; then
+    cat >&2 <<'MSG'
+error: this source archive predates scripts/test-runner.py, so it is older than the
+       repository.  Rebuild it from the current tree and refresh the checksum:
+
+         cd /path/to/the/repository
+         git archive --format=tar.gz --prefix=$pkgname-$pkgver/ \
+             -o packaging/aur/$pkgname/$pkgname-$pkgver.tar.gz HEAD
+         cd packaging/aur/$pkgname && updpkgsums
+
+       (commit your changes first: git archive reads HEAD, not the working tree)
+MSG
+    return 1
+  fi
+
+  PYTHONPATH=. python3 scripts/test-runner.py
 }
 
 package() {

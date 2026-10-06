@@ -11,7 +11,7 @@ optdepends=('curl: dashboard checks in focused-doctor and focused-launch'
             'protontricks: set the winhttp override the game plugin needs')
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/CHARARA97/Focused/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')   # replace with updpkgsums before pushing
+sha256sums=('b607663da15642f4b05f8df64c78cf7c2a3f51530b4e91f814ff2a1f78747c65')   # 由 updpkgsums 生成
 install="$pkgname.install"
 
 # The GitHub archive unpacks to <Repository>-<tag> -- here "Focused-0.1.0" -- which
@@ -31,7 +31,25 @@ build() {
 
 check() {
   cd "$srcdir/src"
-  PYTHONPATH=. python -m unittest discover -s tests -t .
+
+  # A source archive older than the repository is worse than a failing build: it
+  # would package code that no longer exists.  Say exactly what to do instead.
+  if [ ! -f scripts/test-runner.py ]; then
+    cat >&2 <<'MSG'
+error: this source archive predates scripts/test-runner.py, so it is older than the
+       repository.  Rebuild it from the current tree and refresh the checksum:
+
+         cd /path/to/the/repository
+         git archive --format=tar.gz --prefix=$pkgname-$pkgver/ \
+             -o packaging/aur/$pkgname/$pkgname-$pkgver.tar.gz HEAD
+         cd packaging/aur/$pkgname && updpkgsums
+
+       (commit your changes first: git archive reads HEAD, not the working tree)
+MSG
+    return 1
+  fi
+
+  PYTHONPATH=. python3 scripts/test-runner.py
 }
 
 package() {
