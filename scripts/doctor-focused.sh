@@ -371,6 +371,52 @@ print(len(data.get("frozen") or []))' "$state_path" 2>/dev/null || echo 0)"
     fi
 fi
 
+# --- 8. the engine is actually running ---------------------------------------
+#
+# A scan loop that raises on every tick still answers /api/v1/status with
+# active=true, so the interface looks healthy while nothing is enforced.  The log
+# is the only place that shows it.
+if command -v journalctl >/dev/null 2>&1; then
+    # One minute, not five: a window that reaches back past a fix keeps reporting a
+    # problem that no longer exists, which is its own kind of noise.
+    scan_failures="$(journalctl --user -u focused --since '60 seconds ago' --no-pager 2>/dev/null | grep -c 'scan failed' || true)"
+    case "${scan_failures:-0}" in
+        ''|0) ok "the scan loop has not failed in the last minute" ;;
+        *)    bad "the scan loop failed ${scan_failures} time(s) in the last minute: nothing is being enforced"
+              fix "read the reason: journalctl --user -u focused -n 50 --no-pager" ;;
+    esac
+fi
+
+# --- 9. the installed modules agree with each other ---------------------------
+#
+# A new engine.py paired with an older cgroupfs.py raises on every scan (a keyword
+# argument the other side does not accept) and the install looks fine in pacman.
+# Comparing the interfaces against each other catches a half-finished install
+# without needing the source tree, which a packaged install does not have.
+module_state="$(python3 - <<'PY' 2>/dev/null
+import inspect
+try:
+    from focused.core import cgroupfs
+    from focused.core.freezer import Freezer
+    from focused import engine
+except Exception:
+    print("absent")
+    raise SystemExit(0)
+
+accepts = "allowed_pids" in inspect.signature(cgroupfs.plan_for).parameters
+calls = "allowed_pids" in inspect.getsource(engine)
+counts = hasattr(Freezer, "frozen_count")
+uses = "frozen_count()" in inspect.getsource(engine)
+print("ok" if (accepts == calls and counts == uses) else "mixed")
+PY
+)"
+case "${module_state:-absent}" in
+    ok)     ok "the installed modules agree with each other" ;;
+    mixed)  bad "the installed modules do not agree: one side is newer than the other (a half-finished install)"
+            fix "reinstall one consistent set, then restart the service" ;;
+    *)      warn "the Focused python package could not be imported for a consistency check" ;;
+esac
+
 # --- summary ----------------------------------------------------------------
 bar_line 100 "$(printf '%-40s %d/%d' "自检完成 / self-check complete" "$TOTAL_STEPS" "$TOTAL_STEPS")"
 printf '\n%s\n' "小结 / summary: $OK ok, $WARN warning(s), $BAD problem(s)"
