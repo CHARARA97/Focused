@@ -11,7 +11,7 @@ optdepends=('curl: dashboard checks in focused-doctor and focused-launch'
             'protontricks: set the winhttp override the game plugin needs')
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/CHARARA97/Focused/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('a08b280ddd75b595fe7b30dca89aed3281bd2d38ca2c4e696cae721c1545811a')
+sha256sums=('35ec9e59d6c31f01403c3b71b1470996f0d2e62f17c67d949ef1a8177f6129d1')
 install="$pkgname.install"
 
 # The GitHub archive unpacks to <Repository>-<tag> -- here "Focused-0.1.0" -- which
