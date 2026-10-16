@@ -114,7 +114,37 @@ def unit_of(cgroup_path: Optional[str]) -> Optional[str]:
     return name or None
 
 
-def is_dedicated_app_unit(cgroup_path: Optional[str]) -> bool:
+def unit_members(cgroup_path: Optional[str], base: Optional[str] = None) -> Optional[List[int]]:
+    """Every pid inside a cgroup, nested cgroups included.
+
+    ``cgroup.procs`` lists one cgroup's own processes, and Chromium-style
+    applications do create nested cgroups, so the walk is recursive.  ``None``
+    means "could not read it", which callers must treat as *not* proof that the
+    unit is dedicated.
+    """
+    if not cgroup_path:
+        return None
+    root = (CGROUP_ROOT if base is None else base) + cgroup_path.rstrip("/")
+    if not os.path.isdir(root):
+        return None
+    members: List[int] = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        if "cgroup.procs" not in filenames:
+            continue
+        try:
+            with open(os.path.join(dirpath, "cgroup.procs"), "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line:
+                        members.append(int(line))
+        except (OSError, ValueError):
+            return None
+    return sorted(set(members))
+
+
+def is_dedicated_app_unit(
+    cgroup_path: Optional[str], allowed_pids: Optional[Iterable[int]] = None
+) -> bool:
     """Whether this cgroup holds one application and nothing else.
 
     Deliberately conservative: the systemd app-scope convention
@@ -131,7 +161,25 @@ def is_dedicated_app_unit(cgroup_path: Optional[str]) -> bool:
         return False
     if not unit.startswith(("app-", "app@")):
         return False
-    return "/app.slice/" in (cgroup_path or "")
+    if "/app.slice/" not in (cgroup_path or ""):
+        return False
+
+    # The name shape is only a hint.  The compositor case above is real: a
+    # session that does not create app scopes puts a browser in the *shell's*
+    # own scope, whose name still looks exactly like a dedicated one
+    # (``app-niri-noctalia-3778.scope`` held the shell, Steam, the game and the
+    # VPN client next to seven browser helpers).  So when the caller knows which
+    # processes the rule actually matched, every member of the scope has to be
+    # one of them -- otherwise the whole unit is refused and the caller falls
+    # back to freezing the process tree.
+    if allowed_pids is not None:
+        members = unit_members(cgroup_path)
+        if members is None:
+            return False
+        allowed = {int(pid) for pid in allowed_pids}
+        if any(pid not in allowed for pid in members):
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -152,6 +200,7 @@ def plan_for(
     self_cgroup: Optional[str],
     dedicated: Optional[bool] = None,
     unified: bool = True,
+    allowed_pids: Optional[Iterable[int]] = None,
 ) -> FreezePlan:
     """Decide how (or whether) a cgroup may be frozen.
 
@@ -181,7 +230,9 @@ def plan_for(
     if not unit.endswith(_UNIT_SUFFIXES):
         return FreezePlan(PLAN_SKIP, "not-a-unit", unit)
 
-    decided = is_dedicated_app_unit(cgroup_path) if dedicated is None else dedicated
+    decided = (
+        is_dedicated_app_unit(cgroup_path, allowed_pids) if dedicated is None else dedicated
+    )
     if not decided:
         return FreezePlan(PLAN_PID, "shared-unit", unit)
     if contains_us:

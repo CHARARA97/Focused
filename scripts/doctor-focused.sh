@@ -158,6 +158,57 @@ else
     fix "start the game once, then run this again"
 fi
 
+# The Steam launch option is the first link in the chain, and the most silent one:
+# if it names a program that is no longer installed, Steam starts nothing, reports
+# nothing, and the game simply never appears.
+# ~/.steam/steam is usually a symlink to ~/.local/share/Steam, so the same file
+# shows up twice: keep the canonical paths only.
+launch_vdfs=()
+for vdf in "$HOME/.steam/steam/userdata"/*/config/localconfig.vdf \
+           "$HOME/.local/share/Steam/userdata"/*/config/localconfig.vdf; do
+    [ -f "$vdf" ] || continue
+    real="$(readlink -f "$vdf")"
+    seen=0
+    for known in "${launch_vdfs[@]:-}"; do
+        [ "$known" = "$real" ] && seen=1
+    done
+    [ "$seen" -eq 1 ] || launch_vdfs+=("$real")
+done
+
+for vdf in "${launch_vdfs[@]:-}"; do
+    [ -n "$vdf" ] && [ -f "$vdf" ] || continue
+    launch_option="$(python3 - "$vdf" "$APP_ID" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+app = sys.argv[2]
+block = re.search(r'"%s"\s*\{(.*?)\n\t{4}\}' % app, text, re.S)
+if not block:
+    block = re.search(r'"%s"\s*\{(.{0,4000}?)\n\s*\}' % app, text, re.S)
+if block:
+    found = re.search(r'"LaunchOptions"\s*"([^"]*)"', block.group(1))
+    print(found.group(1) if found else "")
+PY
+)"
+    [ -n "$launch_option" ] || continue
+    case "$launch_option" in
+        %command%*) continue ;;
+    esac
+    launch_checked=1
+    first_word="${launch_option%% *}"
+    # The shell expands a leading ~, and Steam runs the option through /bin/sh.
+    case "$first_word" in
+        "~/"*) program="$HOME/${first_word#\~/}" ;;
+        *)     program="$first_word" ;;
+    esac
+    if [ -x "$program" ]; then
+        ok "Steam launch option runs $first_word"
+    else
+        bad "the Steam launch option names a program that is not installed: $first_word"
+        fix "Steam -> this game -> Properties -> Launch Options: use /usr/bin/focused-launch %command%"
+        fix "or remove the wrapper entirely: %command%"
+    fi
+done
+
 # --- 4. the mod -------------------------------------------------------------
 step "4. 插件 / the mod"
 

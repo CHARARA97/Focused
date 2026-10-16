@@ -11,7 +11,7 @@ optdepends=('curl: dashboard checks in focused-doctor and focused-launch'
             'protontricks: set the winhttp override the game plugin needs')
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/CHARARA97/Focused/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('b607663da15642f4b05f8df64c78cf7c2a3f51530b4e91f814ff2a1f78747c65')   # 由 updpkgsums 生成
+sha256sums=('a08b280ddd75b595fe7b30dca89aed3281bd2d38ca2c4e696cae721c1545811a')
 install="$pkgname.install"
 
 # The GitHub archive unpacks to <Repository>-<tag> -- here "Focused-0.1.0" -- which
@@ -40,11 +40,10 @@ error: this source archive predates scripts/test-runner.py, so it is older than 
        repository.  Rebuild it from the current tree and refresh the checksum:
 
          cd /path/to/the/repository
-         git archive --format=tar.gz --prefix=$pkgname-$pkgver/ \
-             -o packaging/aur/$pkgname/$pkgname-$pkgver.tar.gz HEAD
-         cd packaging/aur/$pkgname && updpkgsums
+         git add -A && git commit -m "..."
+         scripts/make-aur-archive.sh --package $pkgname
 
-       (commit your changes first: git archive reads HEAD, not the working tree)
+       (the script archives HEAD, so commit first: uncommitted changes are not in it)
 MSG
     return 1
   fi

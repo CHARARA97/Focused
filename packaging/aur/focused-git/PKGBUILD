@@ -39,11 +39,10 @@ error: this source archive predates scripts/test-runner.py, so it is older than 
        repository.  Rebuild it from the current tree and refresh the checksum:
 
          cd /path/to/the/repository
-         git archive --format=tar.gz --prefix=$pkgname-$pkgver/ \
-             -o packaging/aur/$pkgname/$pkgname-$pkgver.tar.gz HEAD
-         cd packaging/aur/$pkgname && updpkgsums
+         git add -A && git commit -m "..."
+         scripts/make-aur-archive.sh --package $pkgname
 
-       (commit your changes first: git archive reads HEAD, not the working tree)
+       (the script archives HEAD, so commit first: uncommitted changes are not in it)
 MSG
     return 1
   fi

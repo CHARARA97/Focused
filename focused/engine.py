@@ -951,11 +951,21 @@ class FocusedEngine:
         dry_run: bool,
     ) -> bool:
         cgroup = self.procfs.cgroup(proc.pid)
-        plan = cgroupfs.plan_for(cgroup, self._self_cgroup, unified=self._unified_cgroup2)
+        # The tree comes first now: it is what a whole-unit freeze has to be
+        # justified against.  A scope may only be frozen when every process in it
+        # is one this rule matched -- the shell's own scope looks dedicated by
+        # name and is not.
+        tree = cgroupfs.process_tree(proc.pid, parents) or (proc.pid,)
+        plan = cgroupfs.plan_for(
+            cgroup,
+            self._self_cgroup,
+            unified=self._unified_cgroup2,
+            allowed_pids=set(tree),
+        )
         use_units = bool(self.config.freeze.use_units)
         mode = MODE_UNIT if (use_units and plan.plan == cgroupfs.PLAN_UNIT) else MODE_PID
 
-        pids = self._freezable_pids(cgroupfs.process_tree(proc.pid, parents) or (proc.pid,))
+        pids = self._freezable_pids(tree)
         if not pids:
             self._stats["freeze_skipped"] += 1
             return False

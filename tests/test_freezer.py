@@ -313,6 +313,94 @@ class PersistenceTests(FreezerTestCase):
         del sink
 
 
+class FreezeSafetyTests(FreezerTestCase):
+    """Suspensions that could not be undone, and the records they leave behind."""
+
+    def setUp(self):
+        super().setUp()
+        self._cgroup_root = tempfile.TemporaryDirectory()
+        self.addCleanup(self._cgroup_root.cleanup)
+        patcher = mock.patch.object(cgroupfs, "CGROUP_ROOT", self._cgroup_root.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_record_for_a_unit_that_no_longer_exists_settles(self):
+        # The migration case: the state file names units that this machine does
+        # not have.  Retrying their thaw forever is what produced a one-hertz
+        # loop of failing systemctl calls.
+        entry = Frozen(
+            pid=4242,
+            name="firefox",
+            mode=MODE_UNIT,
+            since=0.0,
+            unit="app-firefox-7.scope",
+            cgroup="",
+            pids=(4242,),
+            guards={4242: 1000},
+        )
+        with open(self.state_path, "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "frozen": [entry.to_dict()]}, handle)
+
+        def runner(args, timeout=5.0):
+            return 1, "Unit app-firefox-7.scope not found."
+
+        freezer = self.freezer(FakeProcFS({}, frozen=False), unit_runner=runner)
+
+        self.assertEqual(1, freezer.recover())
+        self.assertEqual([], list_from_state(self.state_path))
+
+    def test_a_unit_whose_thaw_failed_is_never_frozen_again(self):
+        calls = []
+
+        def runner(args, timeout=5.0):
+            calls.append(args)
+            if args[0] == "show":
+                return 0, "loaded"
+            if args[0] == "freeze":
+                return 0, ""  # accepted, but it never confirms below
+            return 1, "Failed to add reference to app-firefox-7.scope"
+
+        # The cgroup exists and is controllable; what fails is the freeze
+        # confirmation and then the rollback.
+        os.makedirs(os.path.dirname(cgroupfs.freeze_file(APP)), exist_ok=True)
+
+        freezer = self.freezer(FakeProcFS({4242: 1000}, frozen=False), unit_runner=runner)
+        target = target_for(mode=MODE_UNIT, unit="app-firefox-7.scope", cgroup=APP)
+
+        # The freeze does not confirm and the rollback thaw fails: this is the
+        # state that left an application frozen.
+        self.assertIsNone(freezer.freeze(target))
+        self.assertIn("thaw", [call[0] for call in calls])
+
+        before = len(calls)
+        self.assertIsNone(freezer.freeze(target))
+        # Refused from memory: not a single systemctl call this time.
+        self.assertEqual(before, len(calls))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can write anything")
+    def test_an_uncontrollable_cgroup_is_never_frozen(self):
+        # ``systemctl freeze`` goes through the user manager and can succeed where
+        # writing cgroup.freeze fails -- and then every thaw fails too.  The
+        # cgroup is probed first, by writing back the value it already has.
+        path = cgroupfs.freeze_file(APP)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("0")
+        os.chmod(path, 0o444)
+        self.addCleanup(os.chmod, path, 0o644)
+
+        calls = []
+
+        def runner(args, timeout=5.0):
+            calls.append(args)
+            return 0, "loaded"
+
+        freezer = self.freezer(FakeProcFS({4242: 1000}, frozen=True), unit_runner=runner)
+
+        self.assertIsNone(freezer.freeze(target_for(mode=MODE_UNIT, unit="app-firefox-7.scope", cgroup=APP)))
+        self.assertEqual([], [call for call in calls if call[0] == "freeze"])
+
+
 class UnitModeTests(FreezerTestCase):
     def setUp(self):
         super().setUp()
@@ -334,7 +422,15 @@ class UnitModeTests(FreezerTestCase):
 
         entry = freezer.freeze(target_for(mode=MODE_UNIT, unit="app-firefox-7.scope", cgroup=APP))
 
-        self.assertEqual([["freeze", "app-firefox-7.scope"]], calls)
+        # The freeze is preceded by a load-state probe, which is what makes "can
+        # this be undone?" answerable before anything is suspended.
+        self.assertEqual(
+            [
+                ["show", "-p", "LoadState", "--value", "app-firefox-7.scope"],
+                ["freeze", "app-firefox-7.scope"],
+            ],
+            calls,
+        )
         self.assertEqual(MODE_UNIT, entry.mode)
         self.assertEqual("app-firefox-7.scope", entry.unit)
 

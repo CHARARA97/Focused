@@ -14,6 +14,16 @@ of them exists because the alternative is a user whose applications are stuck:
 * **Only what the caller hands over is touched.** The rule engine has already
   decided the target is blacklisted and not protected, and ``cgroupfs`` has
   already decided whether the whole unit may be frozen.
+* **A suspension we cannot undo is never started.** Before a unit is frozen its
+  cgroup file is checked by writing back the value it already has.  ``systemctl
+  freeze`` goes through the user manager and can succeed where a direct write
+  fails -- and then every thaw fails too, which is how one machine ended up in a
+  one-hertz freeze/thaw loop with a browser stuck inside it.
+* **A unit whose thaw failed is never frozen again.** The failure is remembered
+  with an exponential backoff, because retrying it is what made the loop.
+* **A unit that no longer exists is settled, not retried.** A record can come
+  from another machine, or from an application that has since exited; "not
+  found" means there is nothing to resume.
 
 Two modes:
 
@@ -171,6 +181,10 @@ class Freezer:
         self._entries: Dict[int, Frozen] = {}
         self._lock = threading.RLock()
         self._loaded = False
+        #: unit -> retry-after timestamp, for units whose thaw failed.
+        self._refused: Dict[str, float] = {}
+        self._refused_fails: Dict[str, int] = {}
+        self._refuse_backoff = 300.0
 
     # -- logging -----------------------------------------------------------
 
@@ -328,6 +342,19 @@ class Freezer:
 
     def _freeze_unit(self, target: Target, reason: str) -> Optional[Frozen]:
         """Freeze a whole cgroup through systemd, then the cgroup file."""
+        remaining = self._refused_until(target.unit)
+        if remaining:
+            self._log(
+                "warning",
+                "not freezing %s: an earlier thaw could not be undone (%.0fs left)"
+                % (target.unit, remaining - self._clock()),
+            )
+            return None
+
+        if not self._can_control_unit(target):
+            self._refuse(target.unit, "the cgroup cannot be controlled from here")
+            return None
+
         code, output = self._systemctl(["freeze", target.unit])
         if code != 0:
             self._log(
@@ -343,7 +370,10 @@ class Freezer:
                 "freeze of %s did not reach frozen=1 within %.2fs; thawing it back"
                 % (target.unit, self._confirm_timeout),
             )
-            self.thaw_unit(target.unit, target.cgroup, reason="confirm-timeout")
+            if not self.thaw_unit(target.unit, target.cgroup, reason="confirm-timeout"):
+                # The freeze did not confirm *and* the thaw failed: this unit is
+                # exactly the kind that must never be touched again.
+                self._refuse(target.unit, "a failed freeze could not be undone")
             return None
 
         self._log(
@@ -376,6 +406,90 @@ class Freezer:
             return False
         return True
 
+    #: systemd's wording when a unit is simply not there any more.
+    _GONE_MARKERS = (
+        "not-found",
+        "not found",
+        "notloaded",
+        "not loaded",
+        "no such unit",
+        "does not exist",
+        "could not be found",
+    )
+
+    def _unit_is_gone(self, output: str) -> bool:
+        lowered = (output or "").lower()
+        return any(marker in lowered for marker in self._GONE_MARKERS)
+
+    def _refused_until(self, unit: str) -> float:
+        """When this unit may be frozen again (0.0 when it is not refused)."""
+        if not unit:
+            return 0.0
+        until = self._refused.get(unit, 0.0)
+        if until and self._clock() >= until:
+            self._refused.pop(unit, None)
+            return 0.0
+        return until
+
+    def _refuse(self, unit: str, why: str) -> None:
+        """Remember that this unit must not be frozen again for a while."""
+        if not unit:
+            return
+        fails = self._refused_fails.get(unit, 0) + 1
+        self._refused_fails[unit] = fails
+        delay = min(self._refuse_backoff * (2 ** (fails - 1)), 3600.0)
+        self._refused[unit] = self._clock() + delay
+        self._log(
+            "error",
+            "will not freeze %s again for %.0fs: %s" % (unit, delay, why),
+        )
+
+    def _can_control_unit(self, target: Target) -> bool:
+        """Whether this suspension could be undone.  Called *before* freezing.
+
+        ``systemctl freeze`` can succeed where a direct write to the cgroup file
+        fails (it goes through the user manager, with its own privileges).  When
+        that happens the freeze sticks and every thaw fails, so the cgroup is
+        probed first -- by writing back the value it already has, which changes
+        nothing.
+        """
+        if target.unit:
+            code, output = self._systemctl(["show", "-p", "LoadState", "--value", target.unit])
+            # Only a positive sign of absence refuses the freeze: a systemctl
+            # that answered something else (an unrelated failure, an empty
+            # answer) is not evidence, and refusing there would disable unit mode
+            # on systems that phrase things differently.
+            if self._unit_is_gone(output):
+                self._log(
+                    "warning",
+                    "not freezing %s: the user manager reports %r"
+                    % (target.unit, (output or "").strip() or "exit %s" % code),
+                )
+                return False
+        if target.cgroup:
+            path = cgroupfs.freeze_file(target.cgroup)
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as handle:
+                        current = handle.read().strip() or "0"
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write(current)
+                except OSError as exc:
+                    self._log(
+                        "warning",
+                        "not freezing %s: %s cannot be controlled (%s)"
+                        % (target.unit or "pid %d" % target.pid, path, exc),
+                    )
+                    return False
+            elif not os.access(os.path.dirname(path), os.W_OK):
+                self._log(
+                    "warning",
+                    "not freezing %s: %s is not writable"
+                    % (target.unit or "pid %d" % target.pid, os.path.dirname(path)),
+                )
+                return False
+        return True
+
     def _confirm_frozen(self, cgroup_path: str) -> bool:
         """Wait for the kernel to report ``frozen 1``.
 
@@ -404,6 +518,16 @@ class Freezer:
         if unit:
             code, output = self._systemctl(["thaw", unit])
             if code != 0:
+                if self._unit_is_gone(output):
+                    # A record can outlive the unit: it may have been written on
+                    # another machine, or the application may have exited.  There
+                    # is nothing to resume, so the record is settled -- retrying
+                    # it is what produced an endless thaw loop.
+                    self._log(
+                        "info",
+                        "unit %s no longer exists; nothing to thaw" % unit,
+                    )
+                    return True
                 ok = False
                 self._log(
                     "warning",

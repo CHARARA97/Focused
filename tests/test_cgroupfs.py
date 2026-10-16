@@ -1,11 +1,15 @@
 """Tests for the freeze-target decision logic.
 
 Everything here is pure: no process is ever stopped, and no /proc or /sys file is
-read.  The whole point of ``cgroupfs`` is that the dangerous decisions can be
-argued about in a unit test.
+read -- where a cgroup has to be inspected, the root is faked in a temporary
+directory.  The whole point of ``cgroupfs`` is that the dangerous decisions can
+be argued about in a unit test.
 """
 
+import os
+import tempfile
 import unittest
+from unittest import mock
 
 from focused.core import cgroupfs
 from focused.core.cgroupfs import (
@@ -208,6 +212,45 @@ class ProcessTreeTests(unittest.TestCase):
         parents = {1: 0, 5: 1, 3: 1, 4: 1}
         self.assertEqual([1, 3, 4, 5], process_tree(1, parents))
 
+
+
+class DedicatedUnitMembershipTests(unittest.TestCase):
+    """The name shape is not proof: the scope has to hold only matched pids."""
+
+    SCOPE = (
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/"
+        "app-niri-noctalia-3778.scope"
+    )
+    SELF = (
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/focused.service"
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+        directory = os.path.join(self.root, self.SCOPE.lstrip("/"))
+        os.makedirs(directory)
+        with open(os.path.join(directory, "cgroup.procs"), "w", encoding="utf-8") as handle:
+            handle.write("100\n200\n300\n")
+        patcher = mock.patch.object(cgroupfs, "CGROUP_ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_only_matched_processes_make_a_unit_dedicated(self):
+        self.assertFalse(cgroupfs.is_dedicated_app_unit(self.SCOPE, {100, 200}))
+        self.assertTrue(cgroupfs.is_dedicated_app_unit(self.SCOPE, {100, 200, 300}))
+
+    def test_a_shared_scope_falls_back_to_the_process_tree(self):
+        plan = cgroupfs.plan_for(self.SCOPE, self.SELF, allowed_pids={100, 200})
+
+        self.assertEqual(cgroupfs.PLAN_PID, plan.plan)
+        self.assertEqual("shared-unit", plan.reason)
+
+    def test_a_scope_of_matched_pids_stays_a_unit(self):
+        plan = cgroupfs.plan_for(self.SCOPE, self.SELF, allowed_pids={100, 200, 300})
+
+        self.assertEqual(cgroupfs.PLAN_UNIT, plan.plan)
 
 if __name__ == "__main__":
     unittest.main()

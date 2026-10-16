@@ -36,10 +36,13 @@ rm -rf "$TMP"
 ```bash
 cd /path/to/the/repository
 git add -A && git commit -m "..."
-git archive --format=tar.gz --prefix=focused-0.1.0/ \
-    -o packaging/aur/focused/focused-0.1.0.tar.gz HEAD
-cd packaging/aur/focused && updpkgsums && makepkg --printsrcinfo > .SRCINFO
+scripts/make-aur-archive.sh          # 重打归档 + 刷新校验和 + .SRCINFO
+cd packaging/aur/focused && makepkg -si
 ```
+
+`scripts/make-aur-archive.sh` 会：解析仓库根、从 `pyproject.toml` 取版本、把归档写到
+`packaging/aur/<包名>/` 下**正确的位置**、校验归档里确实包含 `check()` 与 `package()` 需要的文件、
+再刷新校验和与 `.SRCINFO`。未提交的改动会被列出来提醒（它们不会进归档）。
 
 忽略这一步的典型症状：`check()` 报某个脚本不存在，或者装出来的包缺少你刚改的东西
 （`git archive HEAD` 读的是提交，不是工作区）。PKGBUILD 的 `check()` 会在归档过旧时直接报错并给出上面这段命令。

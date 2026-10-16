@@ -52,6 +52,7 @@ packaging/aur/**/*.tar.gz
 packaging/aur/**/*.pkg.tar.*
 packaging/aur/**/.SRCINFO
 
-# Source archives made for AUR builds
+# Source archives made for AUR builds: both where makepkg looks and wherever the
+# maintainer happened to create them.
 *.tar.gz
 *.pkg.tar.*
