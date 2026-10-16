@@ -268,6 +268,25 @@ class Freezer:
         with self._lock:
             return len(self._entries)
 
+    def frozen_pids(self) -> List[int]:
+        """Every pid currently suspended, each counted once.
+
+        One record carries a whole process tree, and trees overlap: a browser's
+        zygotes appear in the tree of every entry point that reaches them.  The
+        number of records is therefore not the number of suspended processes --
+        reporting it as one made the dashboard claim two frozen processes while
+        twenty were stopped.
+        """
+        with self._lock:
+            pids = set()
+            for entry in self._ordered():
+                pids.update(entry.pids or (entry.pid,))
+            return sorted(pids)
+
+    def frozen_count(self) -> int:
+        """How many processes are suspended right now."""
+        return len(self.frozen_pids())
+
     # -- freezing ----------------------------------------------------------
 
     def freeze(self, target: Target, reason: str = "") -> Optional[Frozen]:

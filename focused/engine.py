@@ -839,15 +839,37 @@ class FocusedEngine:
 
     # -- the scan ----------------------------------------------------------
 
+    #: How many consecutive failed scans before the status says "degraded".
+    #:
+    #: A scan loop that raises on every tick keeps answering the API with
+    #: active=true, so the only honest place to show it is the status itself.
+    DEGRADED_AFTER = 3
+    _scan_failures = 0
+    _last_scan_error = ""
+
     def scan_once(self) -> int:
         """Run exactly one scan.  Returns how many targets were suspended."""
         if not self._scan_lock.acquire(blocking=False):
             return 0
         try:
-            return self._scan_locked()
+            result = self._scan_locked()
         except Exception as exc:  # a bad scan must never kill the daemon
-            self._log("error", "scan failed: %s: %s" % (type(exc).__name__, exc))
+            self._scan_failures += 1
+            self._last_scan_error = "%s: %s" % (type(exc).__name__, exc)
+            self._log("error", "scan failed: %s" % self._last_scan_error)
+            if self._scan_failures == self.DEGRADED_AFTER:
+                # Once, at the threshold: the status endpoint carries the count
+                # from here, and a line per second was what buried it.
+                self._log(
+                    "error",
+                    "the scan loop has failed %d times in a row; enforcement is "
+                    "degraded and the status reports it" % self._scan_failures,
+                )
             return 0
+        else:
+            self._scan_failures = 0
+            self._last_scan_error = ""
+            return result
         finally:
             self._scan_lock.release()
 
@@ -1427,7 +1449,10 @@ class FocusedEngine:
             "delegated_source": self.delegated_source(),
             "dry_run": self._dry_run,
             **self._session_payload_fields(),
-            "frozen_count": len(self._freezer),
+            "frozen_count": self._freezer.frozen_count(),
+            "degraded": self._scan_failures >= self.DEGRADED_AFTER,
+            "scan_failures": self._scan_failures,
+            "last_scan_error": self._last_scan_error,
             "frozen_names": [entry.name for entry in self._freezer.entries()],
             "frozen_units": [
                 entry.unit for entry in self._freezer.entries() if entry.unit
@@ -1483,7 +1508,10 @@ class FocusedEngine:
             },
             "protect_count": len(rules.protect_names),
             "url_patterns": self.url_patterns(),
-            "frozen_count": len(self._freezer),
+            "frozen_count": self._freezer.frozen_count(),
+            "degraded": self._scan_failures >= self.DEGRADED_AFTER,
+            "scan_failures": self._scan_failures,
+            "last_scan_error": self._last_scan_error,
             "frozen_names": [entry.name for entry in self._freezer.entries()],
             "frozen": self.frozen_list(),
             "recent": list(self._recent),

@@ -425,6 +425,31 @@ class FreezeSafetyTests(FreezerTestCase):
         self.assertEqual([], [call for call in calls if call[0] == "freeze"])
 
 
+class FrozenCountTests(FreezerTestCase):
+    """The count is processes, not records: trees overlap."""
+
+    def test_overlapping_trees_are_counted_once(self):
+        starttimes = {4242: 1000, 4243: 1001, 4244: 1002, 4245: 1003}
+        freezer = self.freezer(FakeProcFS(starttimes), Sink())
+
+        freezer.freeze(target_for(pid=4242, pids=(4242, 4243), starttimes=starttimes))
+        freezer.freeze(target_for(pid=4244, pids=(4244, 4243, 4245), starttimes=starttimes))
+
+        # Two records, four processes, and 4243 shared by both trees.
+        self.assertEqual(2, len(freezer.entries()))
+        self.assertEqual(4, freezer.frozen_count())
+        self.assertEqual([4242, 4243, 4244, 4245], freezer.frozen_pids())
+
+    def test_a_settled_tree_leaves_the_count(self):
+        starttimes = {4242: 1000, 4243: 1001}
+        freezer = self.freezer(FakeProcFS(starttimes), Sink())
+        entry = freezer.freeze(target_for(pid=4242, pids=(4242, 4243), starttimes=starttimes))
+
+        self.assertEqual(2, freezer.frozen_count())
+        freezer.thaw(entry, "test")
+        self.assertEqual(0, freezer.frozen_count())
+
+
 class UnitModeTests(FreezerTestCase):
     def setUp(self):
         super().setUp()
