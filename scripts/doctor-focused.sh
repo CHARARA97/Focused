@@ -307,6 +307,70 @@ else
     ok "no token configured on either side (loopback only)"
 fi
 
+# --- 7. the configuration's own paths ---------------------------------------
+#
+# A configuration copied from another machine points at a home directory that
+# does not exist here.  The daemon then cannot read or write its freeze state,
+# and a suspension it cannot undo becomes permanent -- so the paths are checked
+# rather than assumed.
+if [ -f "$FOCUSED_CONFIG" ]; then
+    entries="$(python3 -c 'import json,sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+freeze = data.get("freeze") if isinstance(data.get("freeze"), dict) else {}
+for label, value in (("audit_log", data.get("audit_log")),
+                     ("freeze.state_path", freeze.get("state_path")),
+                     ("plugins_path", data.get("plugins_path")),
+                     ("registry_path", data.get("registry_path"))):
+    if value:
+        print("%s=%s" % (label, value))' "$FOCUSED_CONFIG" 2>/dev/null || echo '')"
+
+    while IFS='=' read -r label value; do
+        [ -n "$value" ] || continue
+        case "$value" in
+            "$HOME"/*) ;;
+            *)  bad "the configuration points $label outside this account: $value"
+                fix "rewrite it for $HOME, or delete the config and let Focused write a new one"
+                continue ;;
+        esac
+        directory="$(dirname "$value")"
+        if [ -d "$directory" ] && [ -w "$directory" ]; then
+            ok "configuration path $label is inside this account and writable"
+        elif [ -d "$directory" ]; then
+            bad "the configuration points $label at a directory this account cannot write: $directory"
+            fix "fix the permissions, or point $label somewhere else"
+        else
+            warn "the directory for $label does not exist yet: $directory"
+            fix "Focused creates it on first use"
+        fi
+    done <<<"$entries"
+
+    # The other half of the same hazard: a state file still full of suspensions.
+    state_path="$(python3 -c 'import json,sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+print((data.get("freeze") or {}).get("state_path", ""))' "$FOCUSED_CONFIG" 2>/dev/null || echo '')"
+
+    if [ -n "$state_path" ] && [ -f "$state_path" ]; then
+        left="$(python3 -c 'import json,sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print(0); raise SystemExit(0)
+print(len(data.get("frozen") or []))' "$state_path" 2>/dev/null || echo 0)"
+        if [ "${left:-0}" -gt 0 ]; then
+            warn "the freeze state file still records $left suspension(s): $state_path"
+            fix "with the service stopped, clear them with: focusedd --thaw-all"
+        else
+            ok "the freeze state file is empty"
+        fi
+    fi
+fi
+
 # --- summary ----------------------------------------------------------------
 bar_line 100 "$(printf '%-40s %d/%d' "自检完成 / self-check complete" "$TOTAL_STEPS" "$TOTAL_STEPS")"
 printf '\n%s\n' "小结 / summary: $OK ok, $WARN warning(s), $BAD problem(s)"
