@@ -349,6 +349,30 @@ class FreezeSafetyTests(FreezerTestCase):
         self.assertEqual(1, freezer.recover())
         self.assertEqual([], list_from_state(self.state_path))
 
+    def test_recovery_keeps_and_reports_what_it_cannot_resume(self):
+        # A real thaw failure (not a missing unit) is not settled: the record is
+        # kept, and recovery has to say so rather than pretend the list is empty.
+        entry = Frozen(
+            pid=4242,
+            name="firefox",
+            mode=MODE_UNIT,
+            since=0.0,
+            unit="app-firefox-7.scope",
+            cgroup="",
+            pids=(4242,),
+            guards={4242: 1000},
+        )
+        with open(self.state_path, "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "frozen": [entry.to_dict()]}, handle)
+
+        def runner(args, timeout=5.0):
+            return 1, "Failed to add reference to app-firefox-7.scope"
+
+        freezer = self.freezer(FakeProcFS({}, frozen=False), unit_runner=runner)
+
+        self.assertEqual(0, freezer.recover())
+        self.assertEqual(1, len(list_from_state(self.state_path)))
+
     def test_a_unit_whose_thaw_failed_is_never_frozen_again(self):
         calls = []
 

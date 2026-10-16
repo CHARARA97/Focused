@@ -615,7 +615,21 @@ class Freezer:
             "warning",
             "found %d frozen target(s) from a previous run; resuming them" % len(entries),
         )
-        return self.thaw_all("startup-recovery")
+        settled = self.thaw_all("startup-recovery")
+        remaining = self.entries()
+        if remaining:
+            # Say it out loud: these are the suspensions this machine cannot undo
+            # by itself (another machine's units, or a freezer we may not touch),
+            # and the state file is the only record that they ever happened.
+            self._log(
+                "error",
+                "%d suspension(s) could not be resumed and are kept for inspection: %s"
+                % (
+                    len(remaining),
+                    ", ".join(sorted(str(entry.name or entry.pid) for entry in remaining)),
+                ),
+            )
+        return settled
 
 
 # ---------------------------------------------------------------------------
