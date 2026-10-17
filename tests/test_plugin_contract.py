@@ -56,6 +56,8 @@ class PluginPayloadContractTests(unittest.TestCase):
     """Every field the plugin reads must exist in the payload it is reading."""
 
     def setUp(self):
+        if not os.path.exists(DTO_PATH):
+            self.skipTest("game plugin source not present: %s" % DTO_PATH)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         config = Config.from_dict(
