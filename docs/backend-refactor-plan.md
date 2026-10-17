@@ -34,7 +34,7 @@
 | 21 | 修复 BE-49–BE-55 | ✅ 完成 |
 
 **计划内进度**：**100%（11/11）**；维护任务 **7/7**；审计/修复 **3/3**。
-**当前状态**：`engine.py` 580 行、`server.py` 290 行、`plugin_api`/`api` 均按职责拆分；测试 **405 项**通过（594 subtests）。
+**当前状态**：`engine.py` 580 行、`server.py` 290 行、`plugin_api`/`api` 均按职责拆分；测试 **412 项**通过（594 subtests）。
 **当前任务**：无。
 **基准**：500 进程 `evaluate` 0.8 ms，总扫描 9.7 ms。
 
@@ -51,7 +51,7 @@
 | 低耦合、小模块 | engine 580 行、server 457 行、plugins/registry 348 行、api 路由独立；仍有 `plugin_api` 411 行 | ✅ 基本满足 |
 | 插件自由且安全 | 规则 add/remove/pids、state、claim、scan；能力 declared ∩ granted；无裸 freeze/thaw | ✅ |
 | 可读/可调试 | 命名空间 API、reason code、`scan_ms`、审计事件 | ✅ |
-| 测试保护 | 405 项通过，含真实冻结 e2e | ✅ |
+| 测试保护 | 412 项通过，含真实冻结 e2e | ✅ |
 
 **结论**：方向在执行，且没有偏离“安全优先 + 后端 only”；当前主要债务是 engine/server/plugins 三个文件仍偏大，以及事件/配置/插件生命周期还没有独立服务。
 
@@ -436,4 +436,4 @@ BE-18：`recorded_pids()` 与 `stopped_pids()` 分开；`frozen_count()` 改为�
 - BE-53：webhook 改为有界队列（100）+ 单 daemon worker；
 - BE-54：`frozen.json` 保存失败先撤销，撤销失败保留内存记录；
 - BE-55：已有冻结记录直接 skip，避免重复累计；
-- 测试 **405 passed**（594 subtests）。
+- 测试 **412 passed**（594 subtests）。

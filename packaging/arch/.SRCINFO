@@ -1,0 +1,16 @@
+pkgbase = focused
+	pkgdesc = Suspend distracting applications while you focus, and resume them after
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/CHARARA97/Focused
+	install = focused.install
+	arch = any
+	license = MIT
+	makedepends = python-installer
+	depends = bash
+	depends = python
+	options = !debug
+	source = focusd-0.2.0-py3-none-any.whl::https://github.com/CHARARA97/Focused/releases/download/v0.2.0/focusd-0.2.0-py3-none-any.whl
+	sha256sums = ed6a36acf2355f9d984a2faf11a29c75044a20480f8384bf08a2cbea21726141
+
+pkgname = focused

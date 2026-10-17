@@ -56,3 +56,16 @@ sh install.sh
 ```
 
 `install.sh` 会自动取 latest release 的 wheel 和两个 helper 脚本。
+
+## Arch Linux 本地包
+
+`packaging/arch/` 是本地 `makepkg` 包，不是 AUR 提交。
+
+```bash
+cd packaging/arch
+updpkgsums          # 版本/wheel 变化后
+makepkg -si
+systemctl --user enable --now focused
+```
+
+`namcap focused-*.pkg.tar.zst` 应只剩 Python entry point 的提示。

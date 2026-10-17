@@ -1,0 +1,37 @@
+# Maintainer: CHARARA97 <CHARARA97@outlook.com>
+#
+# Local Arch package for the published Focused wheel.  This is a binary-wheel package:
+# the release workflow already builds and tests the wheel.
+# It is not an AUR submission; build it from a checkout with `makepkg -si`.
+pkgname=focused
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Suspend distracting applications while you focus, and resume them after"
+arch=('any')
+url="https://github.com/CHARARA97/Focused"
+license=('MIT')
+depends=('bash' 'python')
+makedepends=('python-installer')
+install=focused.install
+options=('!debug')
+
+source=("focusd-${pkgver}-py3-none-any.whl::https://github.com/CHARARA97/Focused/releases/download/v${pkgver}/focusd-${pkgver}-py3-none-any.whl")
+sha256sums=('ed6a36acf2355f9d984a2faf11a29c75044a20480f8384bf08a2cbea21726141')
+
+package() {
+  python -m installer --destdir="$pkgdir" --prefix=/usr --compile-bytecode 2 \
+    "$srcdir/focusd-${pkgver}-py3-none-any.whl"
+
+  # User service, not a system service: Focused operates on the invoking user.
+  install -Dm644 "$startdir/../../packaging/focused.service" \
+    "$pkgdir/usr/lib/systemd/user/focused.service"
+
+  # Optional self-check helper from the same checkout.
+  install -Dm755 "$startdir/../../scripts/doctor-focused.sh" \
+    "$pkgdir/usr/bin/focused-doctor"
+
+  install -Dm644 "$startdir/../../README.md" \
+    "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 "$startdir/../../LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

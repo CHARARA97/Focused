@@ -102,7 +102,44 @@ focused --help
 focused
 ```
 
-### 方式 C：从源码运行（开发用）
+### 方式 C：Arch Linux 本地包
+
+不依赖 AUR；从仓库里的 `packaging/arch/` 直接构建：
+
+```bash
+git clone https://github.com/CHARARA97/Focused.git
+cd Focused/packaging/arch
+makepkg -si
+```
+
+安装后：
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now focused
+focused --help
+```
+
+包名和命令都是 `focused`。包内容：
+
+```text
+/usr/bin/focused
+/usr/bin/focusedd
+/usr/bin/focused-doctor
+/usr/lib/systemd/user/focused.service
+```
+
+卸载：
+
+```bash
+systemctl --user disable --now focused
+focused --thaw-all
+sudo pacman -Rns focused
+```
+
+当前没有提交 AUR；`makepkg -si` 是本地安装方式。
+
+### 方式 D：从源码运行（开发用）
 
 ```bash
 git clone https://github.com/CHARARA97/Focused.git
