@@ -6,7 +6,7 @@ clocks its tests need, without touching the real system.
 
 import os
 import tempfile
-from typing import Optional, Sequence
+from typing import Dict, Iterable, Optional, Sequence
 
 from focused.core.procfs import ProcessInfo
 
