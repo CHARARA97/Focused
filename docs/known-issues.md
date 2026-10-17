@@ -118,17 +118,17 @@
 
 | ID | 级别 | 类型 | 问题 | 证据 | 影响 | 修复方向 |
 |---|---|---|---|---|---|---|
-| PLG-01 | P0 | bug | token 头不匹配（= X-01） | 同上 | 同上 | 同上 |
-| PLG-02 | P1 | bug | 规则推送失败阻断心跳（= X-03） | 同上 | 同上 | 同上 |
-| PLG-03 | P1 | design | 两条规则推送路径（= X-02） | 同上 | 同上 | 同上 |
-| PLG-04 | P1 | design/doc | 没有 countup 分支；与 README/NEXT-SESSION 说法冲突（= X-04） | `SessionGate.Active`；`GameTimerProbe` 只读 `PomodoroService` | 正向计时可能被误冻 | 显式 `TimerMode` 策略；共享 fixture |
-| PLG-05 | P2 | UI 正确性 | HUD 的“已冻结”用累计值，面板用当前值 | [FocusRunner.cs:723](../../chillfocus/ChillFocused/Core/FocusRunner.cs#L723)（`frozen_total`）vs [FocusRunner.cs:734](../../chillfocus/ChillFocused/Core/FocusRunner.cs#L734)（`frozen_count`）；HUD 用在 282-284/303 | 同一标签两个含义，排查时误导 | HUD 用 current；或标“累计” |
-| PLG-06 | P2 | bug | 两个时钟基准混用 | `ReadAt` = Unity `unscaledTime`（[GameTimerProbe.cs:282](../../chillfocus/ChillFocused/Core/GameTimerProbe.cs#L282)）；`now` = runner 构造起的秒数（[HeadlessRunner.cs:322](../../chillfocus/ChillFocused/Core/HeadlessRunner.cs#L322)） | 新鲜度窗口被“进程启动→插件加载”的差值放大 | 注入同一个单调时钟 port |
-| PLG-07 | P2 | observability | 后端 `degraded` 进不了插件 | `FocusStateResponse` 无该字段（[FocusedProtocol.cs:64-85](../../chillfocus/ChillFocused/Core/FocusedProtocol.cs#L64-L85)） | 扫描崩溃时 HUD 仍显示正常 | DTO 加扁平字段；HUD 显示红色 |
+| PLG-01 | P0 | bug | token 头不匹配（= X-01） | 同上 | 同上 | **已修复（2026-10-18）**：`X-Focused-Token`，测试覆盖 |
+| PLG-02 | P1 | bug | 规则推送失败阻断心跳（= X-03） | 同上 | 同上 | **已修复（2026-10-18）**：规则/心跳独立 try；集成测试 |
+| PLG-03 | P1 | design | 两条规则推送路径（= X-02） | 同上 | 同上 | **已修复（2026-10-18）**：只保留 HeadlessRunner/RuleSync；overlay 删除 PushRules |
+| PLG-04 | P1 | design/doc | 没有 countup 分支；与 README/NEXT-SESSION 说法冲突（= X-04） | `SessionGate.Active`；`GameTimerProbe` 只读 `PomodoroService` | 正向计时可能被误冻 | **已修复（2026-10-18）**：`TimerMode` + countup 查询；未知模式 fail-closed |
+| PLG-05 | P2 | UI 正确性 | HUD 的“已冻结”用累计值，面板用当前值 | [FocusRunner.cs:723](../../chillfocus/ChillFocused/Core/FocusRunner.cs#L723)（`frozen_total`）vs [FocusRunner.cs:734](../../chillfocus/ChillFocused/Core/FocusRunner.cs#L734)（`frozen_count`）；HUD 用在 282-284/303 | 同一标签两个含义，排查时误导 | **已修复（2026-10-18）**：HUD 显示当前冻结，另列累计处理 |
+| PLG-06 | P2 | bug | 两个时钟基准混用 | `ReadAt` = Unity `unscaledTime`（[GameTimerProbe.cs:282](../../chillfocus/ChillFocused/Core/GameTimerProbe.cs#L282)）；`now` = runner 构造起的秒数（[HeadlessRunner.cs:322](../../chillfocus/ChillFocused/Core/HeadlessRunner.cs#L322)） | 新鲜度窗口被“进程启动→插件加载”的差值放大 | **已修复（2026-10-18）**：`GameClock` 共享单调时钟 |
+| PLG-07 | P2 | observability | 后端 `degraded` 进不了插件 | `FocusStateResponse` 无该字段（[FocusedProtocol.cs:64-85](../../chillfocus/ChillFocused/Core/FocusedProtocol.cs#L64-L85)） | 扫描崩溃时 HUD 仍显示正常 | **已修复（2026-10-18）**：DTO 加字段，HUD 显示警告 |
 | PLG-08 | P2 | dead feature | `GameProbe` 读 `CurrentMainState` 只写日志 | [Plugin.cs:459-469](../../chillfocus/ChillFocused/Plugin.cs#L459-L469) | 注释暗示“按模式判定”，实际不参与决策 | 删除或接进 `SessionGate` |
-| PLG-09 | P3 | cleanup | 死代码/字段：`ReportSessionAsync`、`_frozenUnits`、`_connectionError`、`Heartbeat(force)` 的 `force`、`_freezeEnabled` 恒为 true | [FocusedClient.cs:101](../../chillfocus/ChillFocused/Core/FocusedClient.cs#L101)、[FocusRunner.cs:69](../../chillfocus/ChillFocused/Core/FocusRunner.cs#L69) | 认知负担；误导读者以为存在第二条心跳/字段有用 | 删除；或真正使用 |
-| PLG-10 | P3 | concurrency | `HeadlessRunner.SessionActive` 是普通静态 bool，后台写、主线程读 | [HeadlessRunner.cs:86](../../chillfocus/ChillFocused/Core/HeadlessRunner.cs#L86) | 理论可见性问题；实践通常无害 | 改成不可变 `StatusSnapshot` + `Volatile`/锁 |
-| PLG-11 | P3 | security | `FocusedUrl` 不校验 loopback | `FocusSettings.Validate` 只查空 | 用户可把规则/状态发到远端；与后端“loopback only”的约束不对称 | 与后端相同的 loopback 校验 |
+| PLG-09 | P3 | cleanup | 死代码/字段：`ReportSessionAsync`、`_frozenUnits`、`_connectionError`、`Heartbeat(force)` 的 `force`、`_freezeEnabled` 恒为 true | [FocusedClient.cs:101](../../chillfocus/ChillFocused/Core/FocusedClient.cs#L101)、[FocusRunner.cs:69](../../chillfocus/ChillFocused/Core/FocusRunner.cs#L69) | 认知负担；误导读者以为存在第二条心跳/字段有用 | **已修复（2026-10-18）**：删除未用方法/字段/镜像 heartbeat |
+| PLG-10 | P3 | concurrency | `HeadlessRunner.SessionActive` 是普通静态 bool，后台写、主线程读 | [HeadlessRunner.cs:86](../../chillfocus/ChillFocused/Core/HeadlessRunner.cs#L86) | 理论可见性问题；实践通常无害 | **已修复（2026-10-18）**：删除静态状态；overlay 读后端 status |
+| PLG-11 | P3 | security | `FocusedUrl` 不校验 loopback | `FocusSettings.Validate` 只查空 | 用户可把规则/状态发到远端；与后端“loopback only”的约束不对称 | **已修复（2026-10-18）**：`IsLoopbackUrl` 校验；非法 URL 回退 127.0.0.1 |
 | PLG-12 | P3 | robustness | runner wiring 的 `RequestImmediateSync` 捕获 `_headless`，在 `StartHeadlessSync` 之前可能为 null | [Plugin.cs:524](../../chillfocus/ChillFocused/Plugin.cs#L524) vs 585 | 极端时序下 NRE，日志可见但功能降级 | 用 `NullObject`/延迟注入；或先建 reporter 再建 runner |
 | PLG-13 | P3 | design | 两套 JSON 序列化（手工 `RuleJson` + `JsonUtility`） | [HeadlessRunner.cs:412](../../chillfocus/ChillFocused/Core/HeadlessRunner.cs#L412)、`FocusedClient` | 字段/转义规则可能分叉 | 统一一个 wire serializer port |
 | PLG-14 | P3 | UX | Overlay 的 `_connected` 与 reporter 的连接状态是两份 | `FocusRunner.MarkConnected` vs `HeadlessRunner` | 一条路径卡住时 HUD 可能说“未连接”而实际在冻结 | 单一 `StatusSnapshot` |
@@ -148,7 +148,7 @@
 5. **规则按来源并集**：插件撤下自己的规则不影响别人。
 6. **纯判定与平台分离**：`rules.py`、`cgroupfs.py`、`SessionGate.cs` 可以脱离游戏/系统单测。
 7. **扁平 `/focus` DTO**：Unity `JsonUtility` 的硬约束，不要改成嵌套。
-8. **测试金字塔已有基础**：256 项后端 + 251 项插件 + 真实进程 e2e；重构要保住这些测试的语义。
+8. **测试金字塔已有基础**：412 项后端 + 272 项插件 + 真实进程 e2e；重构要保住这些测试的语义。
 9. **`focused-doctor` 的思路**：把“静默失败”变成一条条可执行的检查。
 
 ---
