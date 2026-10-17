@@ -12,6 +12,7 @@ from focused.core.rules import (
     ACTION_PROTECT,
     ACTION_SKIP,
     EvalContext,
+    RuleRejected,
     RuleSet,
     evaluate,
     is_catch_all_pattern,
@@ -120,10 +121,13 @@ class PidMatchingTests(unittest.TestCase):
         self.assertFalse(decision.should_kill)
         self.assertIn("guard mismatch", decision.reason)
 
-    def test_pid_without_guard_still_matches(self):
+    def test_pid_without_guard_is_refused(self):
+        """No guard means PID reuse cannot be excluded; never freeze."""
         rules = RuleSet(pids=frozenset({4242}))
         proc = make_proc(pid=4242, starttime=999)
-        self.assertTrue(evaluate(proc, rules, ctx()).should_kill)
+        decision = evaluate(proc, rules, ctx())
+        self.assertFalse(decision.should_kill)
+        self.assertIn("reuse guard", decision.reason)
 
     def test_unknown_starttime_fails_closed(self):
         """Without a start time the guard cannot be verified, so refuse to kill."""
@@ -292,11 +296,37 @@ class RuleSetTests(unittest.TestCase):
         self.assertTrue(RuleSet().is_empty)
         self.assertFalse(RuleSet(names=frozenset({"x"})).is_empty)
 
+    def test_a_pid_rule_without_a_guard_is_skipped(self):
+        rules = RuleSet(pids=frozenset({4242}), pid_guards={})
+
+        decision = evaluate(make_proc(pid=4242), rules, ctx())
+
+        self.assertEqual(ACTION_SKIP, decision.action)
+        self.assertIn("reuse guard", decision.reason)
+
     def test_catch_all_detection(self):
         for pattern in ("*", "**", "*?", "?"):
             self.assertTrue(is_catch_all_pattern(pattern), pattern)
         for pattern in ("firefox", "chrom*", "steam*"):
             self.assertFalse(is_catch_all_pattern(pattern), pattern)
+
+
+class RuleValidationTests(unittest.TestCase):
+    def test_catch_all_is_a_problem(self):
+        problems = RuleSet(names=frozenset({"*"})).problems()
+
+        self.assertEqual(1, len(problems))
+        self.assertEqual("rule.catch-all", problems[0].code)
+        self.assertIn("*", str(problems[0]))
+
+    def test_normal_patterns_have_no_problems(self):
+        self.assertEqual((), RuleSet(names=frozenset({"firefox", "chrom*"})).problems())
+
+    def test_rule_rejected_lists_every_problem(self):
+        rejected = RuleRejected(RuleSet(names=frozenset({"*", "?"})).problems())
+
+        self.assertEqual(2, len(rejected.problems))
+        self.assertIn("catch-all", str(rejected))
 
 
 if __name__ == "__main__":

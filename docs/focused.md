@@ -12,7 +12,7 @@
         │                                          │
         └── 第三方插件（任何语言 / HTTP）────────┘
                                                    │
-                              看板 http://127.0.0.1:8766/ · CLI focusedd
+                              看板 http://127.0.0.1:8766/ · CLI focused
 ```
 
 Focused 自己就是完整应用：选名单、开始专注、挂起、恢复、看日志、管插件，全都自带。
@@ -23,6 +23,7 @@ Focused 自己就是完整应用：选名单、开始专注、挂起、恢复、
 
 ```bash
 scripts/install-focused.sh --start     # 装到 ~/.local/share/focused/app 并启动 user service
+focused --help                         # 真正的命令入口
 systemctl --user status focused        # 看状态
 ```
 
@@ -86,13 +87,13 @@ curl -X POST .../api/v1/focus/session -d '{"stop":true}'          # 结束
 ## 4. 命令行
 
 ```bash
-focusedd --session 25              # 就地做一轮 25 分钟，结束后自动恢复并退出
-focusedd                           # 常驻，由看板 / 插件 / 系统会话驱动
-focusedd --once [--dry-run]        # 跑一次扫描（预演）
-focusedd --status / --frozen       # 问正在运行的实例 / 现在冻着什么（不依赖实例）
-focusedd --thaw-all                # 全部恢复（幂等；systemd ExecStopPost 就是跑这个）
-focusedd --add-name firefox        # 追加黑名单（脚本友好）
-focusedd --add-url reddit.com      # 追加网址名单
+focused --session 25              # 就地做一轮 25 分钟，结束后自动恢复并退出
+focused                            # 常驻，由看板 / 插件 / 系统会话驱动
+focused --once [--dry-run]        # 跑一次扫描（预演）
+focused --status / --frozen       # 问正在运行的实例 / 现在冻着什么（不依赖实例）
+focused --thaw-all                # 全部恢复（幂等；systemd ExecStopPost 就是跑这个）
+focused --add-name firefox        # 追加黑名单（脚本友好）
+focused --add-url reddit.com      # 追加网址名单
 kill -USR1 <pid>                   # 紧急全部恢复
 ```
 
@@ -174,7 +175,7 @@ def on_event(focused, event):                      # 每次事件回调，别阻
 |---|---|
 | 专注结束 / 手动结束 | 立刻全部解冻 |
 | 插件的租约过期 | 当成会话结束，立刻解冻并记审计 |
-| `focusedd` 被 `SIGKILL` | systemd `ExecStopPost` 跑 `--thaw-all`（主进程已被杀也能跑） |
+| `focused` 被 `SIGKILL` | systemd `ExecStopPost` 跑 `--thaw-all`（主进程已被杀也能跑） |
 | 机器重启 / 下次启动 | 启动时按 `frozen.json` 把上一轮遗留全部解冻 |
 | 规则变了、目标不再命中 | 立刻解冻它 |
 | PID 被复用 | 逐 PID 校验 `starttime`，绝不对陌生进程发 `SIGCONT` |
@@ -192,3 +193,27 @@ cd focused && PYTHONPATH=. python3 -m unittest discover -s tests -t .
 覆盖：引擎（真进程冻结/解冻、cgroup 规则、PID 复用、遗留恢复）、会话与租约、**多来源规则合并**、
 **插件注册/令牌/命名空间规则/会话 claim/禁用/移除**、配置 API、进程列表、事件流、进程内插件
 （正常加载 / 加载失败隔离 / 事件抛异常自动禁用）、协议全端点与鉴权、看板冒烟。
+
+## 9. 插件开发
+
+两类插件都通过同一套安全闸门：它们只能**贡献规则**和**认领会话**，不能直接冻结任何进程。
+
+| 类型 | 位置 | 入口 | 文档 |
+|---|---|---|---|
+| 进程内 Python | `~/.config/focused/plugins/*.py` | `register(api)` / `on_event(api, event)` | [plugin-api.md](plugin-api.md) |
+| HTTP | 任意语言，loopback | `POST /api/v1/plugins/register` → token | [plugin-api.md](plugin-api.md) |
+
+最小示例见 [`examples/plugins/hello.py`](../examples/plugins/hello.py)，
+HTTP 客户端示例见 [`examples/http_plugin.py`](../examples/http_plugin.py)。
+
+插件 API 的几条硬规则：
+
+- `api.rules.add/remove/replace/list` 只编辑该插件自己的来源；保护名单只增不减；
+- `pids` 由宿主自动填 starttime guard；gone/reused/pid≤1 会被拒绝；
+- `names=["*"]` 会被拒绝（`PluginError: rules.rejected` / HTTP 400）；
+- `api.session.claim(ttl)` 是租约，必须续期；范围 5–3600 秒；`release` 只撤销自己的票；
+- `api.state.summary/frozen` 只读；`api.scan.request` 全局冷却（默认 1s）；
+- 能力是 `declared ∩ granted`；危险能力（裸 freeze/thaw、全局 override）默认不授予；
+- 没有 `freeze(pid)` / `thaw(pid)`：冻结/解冻 = 加/删规则，由宿主安全闸门执行；
+- 插件异常被隔离；失败/禁用/移除时规则与租约会被清理；
+- 所有拒绝都有 reason，日志形如 `event=freeze.refuse reason=shared-unit`。

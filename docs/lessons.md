@@ -2,13 +2,13 @@
 
 
 > **状态说明（合并后）**：本文档写作时的宿主侧执行者是 `chillfocusd` 守护进程。
-> 它已经**并入 Focused 应用**（`focused/`，`~/.local/bin/focusedd`，端口 8766），
+> 它已经**并入 Focused 应用**（`focused/`，`~/.local/bin/focused`，端口 8766），
 > 那一层已经删除；下文的"守护进程"就是今天的 **Focused**。
 > 当前架构见 [README](../README.md)，应用细节见 [focused.md](focused.md)。
 > 开发过程中实测得到的结论，按"哪些是游戏的硬事实、哪些是 IMGUI 的坑、哪些是架构判断、
 > 哪些是工作流习惯"分四部分记录。
 >
-> 已经写进 [design.md](design.md) 的机制（创作模式门控、fail-closed、PID 复用防护、
+> 已经写进 [design.md](../../chillfocus/docs/design.md) 的机制（创作模式门控、fail-closed、PID 复用防护、
 > `killpg` 禁令等）和 [ui-design.md](ui-design.md) 的界面梳理，这里不重复，只在相关处指路。
 
 ---
@@ -132,7 +132,7 @@ Easy Save 3，**GZip + JSON，未加密**。宿主侧路径：
 
 2. **规则引擎必须 fail-closed，且有 PID 复用防护。** 保护规则优先于黑名单；用
    `/proc/<pid>/stat` 第 22 字段（进程启动时间）确认 PID 没被复用；**永远不用 `killpg`**
-   （已有 AST 测试断言代码里不出现它）。详见 [design.md](design.md)。
+   （已有 AST 测试断言代码里不出现它）。详见 [design.md](../../chillfocus/docs/design.md)。
 
 3. **权威状态 + 超时 + 兜底。** Harmony 探针（权威，带 TTL）+ 存档轮询（兜底）。
    任何一个坏掉都不会导致误判。TTL 是必须的，否则探针挂掉后状态会永久陈旧。

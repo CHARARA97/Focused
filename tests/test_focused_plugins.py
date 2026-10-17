@@ -17,6 +17,7 @@ import urllib.request
 
 from focused.config import Config
 from focused.engine import FocusedEngine
+from focused.plugin_api import CAP_STATE_READ, SAFE_CAPABILITIES
 from focused.server import API_PREFIX, FocusedServer
 
 
@@ -85,12 +86,6 @@ class SecurePluginTests(PluginServerTestCase):
 
     token = "s3cret"
 
-
-class SecurePluginTests(PluginServerTestCase):
-    """Same server, but with an application token configured."""
-
-    token = "s3cret"
-
     def test_a_wrong_plugin_token_is_refused(self):
         plugin_id, token = self.register("pomodoro")
 
@@ -106,6 +101,22 @@ class SecurePluginTests(PluginServerTestCase):
         )
         self.assertEqual(200, ok)
 
+    def test_a_plugin_token_can_read_focus_and_events(self):
+        _plugin_id, token = self.register("reader")
+
+        self.assertEqual(200, self.call("GET", "/focus", token=token)[0])
+        self.assertEqual(200, self.call("GET", "/events?since=0", token=token)[0])
+
+    def test_a_plugin_token_cannot_read_the_full_status(self):
+        _plugin_id, token = self.register("reader")
+
+        self.assertEqual(401, self.call("GET", "/status", token=token)[0])
+
+    def test_a_plugin_token_cannot_patch_config(self):
+        _plugin_id, token = self.register("reader")
+
+        self.assertEqual(401, self.call("PATCH", "/config", {"dry_run": True}, token=token)[0])
+
     def test_the_application_token_also_works_for_plugins(self):
         plugin_id, _token = self.register("pomodoro")
 
@@ -116,6 +127,136 @@ class SecurePluginTests(PluginServerTestCase):
         self.assertEqual(200, status)
 
 
+class PluginRuleApiTests(PluginServerTestCase):
+    def test_state_and_rules_are_scoped_to_the_plugin(self):
+        plugin_id, token = self.register("editor")
+
+        status, state = self.call("GET", "/plugins/%s/state" % plugin_id, token=token)
+        self.assertEqual(200, status)
+        self.assertIn("active", state)
+        self.assertIn("health", state)
+
+        status, rules = self.call("GET", "/plugins/%s/rules" % plugin_id, token=token)
+        self.assertEqual(200, status)
+        self.assertEqual([], rules["rules"]["names"])
+
+        status, payload = self.call(
+            "POST", "/plugins/%s/rules/add" % plugin_id,
+            {"names": ["firefox"]}, token=token,
+        )
+        self.assertEqual(200, status)
+        self.assertIn("firefox", payload["rules"]["names"])
+
+        status, payload = self.call(
+            "POST", "/plugins/%s/rules/remove" % plugin_id,
+            {"names": ["firefox"]}, token=token,
+        )
+        self.assertEqual(200, status)
+        self.assertNotIn("firefox", payload["rules"]["names"])
+
+    def test_a_single_string_rule_is_refused(self):
+        plugin_id, token = self.register("typo")
+
+        status, payload = self.call(
+            "POST", "/plugins/%s/rules/add" % plugin_id,
+            {"names": "firefox"}, token=token,
+        )
+
+        self.assertEqual(400, status)
+        self.assertIn("rules.type", payload["error"])
+
+    def test_scan_is_rate_limited(self):
+        plugin_id, token = self.register("scanner")
+
+        status, first = self.call("POST", "/plugins/%s/scan" % plugin_id, {}, token=token)
+        self.assertEqual(200, status)
+        self.assertTrue(first["accepted"])
+
+        status, second = self.call("POST", "/plugins/%s/scan" % plugin_id, {}, token=token)
+        self.assertEqual(429, status)
+        self.assertFalse(second["accepted"])
+        self.assertEqual("rate-limited", second["reason"])
+
+    def test_a_session_requires_a_lease(self):
+        plugin_id, token = self.register("timer")
+
+        status, payload = self.call(
+            "POST", "/plugins/%s/session" % plugin_id,
+            {"active": True, "ttl_seconds": 1}, token=token,
+        )
+        self.assertEqual(400, status)
+        self.assertIn("session.ttl", payload["error"])
+
+        status, payload = self.call(
+            "POST", "/plugins/%s/session" % plugin_id,
+            {"active": True}, token=token,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(payload["active"])
+
+
+class SecurePluginRuleApiTests(PluginServerTestCase):
+    token = "s3cret"
+
+    def test_the_dashboard_shell_loads_without_a_token(self):
+        with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as response:
+            self.assertEqual(200, response.status)
+            self.assertIn("Focused", response.read().decode("utf-8"))
+
+        status, _payload = self.call("GET", "/status", token="")
+        self.assertEqual(401, status)
+
+    def test_a_foreign_origin_is_refused(self):
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d%s/status" % (self.port, API_PREFIX),
+            headers={"Origin": "https://evil.example"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(403, caught.exception.code)
+
+    def test_a_non_json_body_is_refused(self):
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d%s/focus/state" % (self.port, API_PREFIX),
+            data=b'{"active": true}',
+            headers={
+                "Content-Type": "text/plain",
+                "X-Focused-Token": self.token,
+            },
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(415, caught.exception.code)
+
+    def test_a_token_change_applies_to_the_running_server(self):
+        self.engine.update_config({"http": {"token": "new-secret"}})
+
+        self.assertEqual(401, self.call("GET", "/status", token="s3cret")[0])
+        self.assertEqual(200, self.call("GET", "/status", token="new-secret")[0])
+
+    def test_read_only_tokens_need_the_matching_capability(self):
+        record = self.engine.plugins.register(
+            name="restricted",
+            plugin_id="restricted",
+            capabilities=(CAP_STATE_READ,),
+            granted=SAFE_CAPABILITIES,
+        )
+
+        self.assertEqual(200, self.call("GET", "/focus", token=record.token)[0])
+        self.assertEqual(401, self.call("GET", "/events?since=0", token=record.token)[0])
+
+    def test_a_plugin_token_cannot_read_another_plugins_state(self):
+        first_id, first_token = self.register("first")
+        second_id, _second_token = self.register("second")
+
+        status, _payload = self.call(
+            "GET", "/plugins/%s/state" % second_id, token=first_token
+        )
+
+        self.assertEqual(401, status)
+
+
 class RegistrationTests(PluginServerTestCase):
     def test_a_plugin_registers_and_gets_its_own_token(self):
         status, payload = self.call("POST", "/plugins/register", {"name": "Pomodoro Timer", "version": "1.2"})
@@ -124,6 +265,41 @@ class RegistrationTests(PluginServerTestCase):
         self.assertEqual("pomodoro-timer", payload["id"])
         self.assertTrue(payload["token"])
         self.assertIn("/plugins/pomodoro-timer/rules", payload["endpoints"]["rules"])
+
+    def test_http_registration_cannot_create_a_python_plugin(self):
+        status, payload = self.call(
+            "POST", "/plugins/register", {"name": "sneaky", "kind": "python"}
+        )
+
+        self.assertEqual(400, status)
+        self.assertIn("kind=http", payload["error"])
+
+    def test_a_non_http_webhook_is_refused(self):
+        status, _payload = self.call(
+            "POST", "/plugins/register",
+            {"name": "hook", "webhook_url": "file:///etc/passwd"},
+        )
+        self.assertEqual(400, status)
+
+        plugin_id, _token = self.register("hook2")
+        status, _payload = self.call(
+            "POST", "/plugins/%s/webhook" % plugin_id, {"url": "file:///tmp/x"}
+        )
+        self.assertEqual(400, status)
+
+    def test_the_plugin_list_does_not_leak_tokens(self):
+        self.call("POST", "/plugins/register", {"name": "secretive"})
+
+        status, payload = self.call("GET", "/plugins")
+        listed = [item for item in payload["plugins"] if item["id"] == "secretive"][0]
+        self.assertEqual(200, status)
+        self.assertNotIn("token", listed)
+        self.assertTrue(listed["token_set"])
+
+        _status, engine_payload = self.call("GET", "/status")
+        status_listed = [item for item in engine_payload["plugins"] if item["id"] == "secretive"][0]
+        self.assertNotIn("token", status_listed)
+        self.assertTrue(status_listed["token_set"])
 
     def test_registering_twice_keeps_the_same_identity_and_token(self):
         _status, first = self.call("POST", "/plugins/register", {"name": "pomodoro"})
@@ -272,11 +448,11 @@ class AddonTests(PluginServerTestCase):
     def test_a_good_addon_loads_and_is_registered(self):
         self.write_addon(
             "good.py",
-            "def register(focused):\n"
+            "def register(api):\n"
             "    return {'name': 'stats', 'version': '0.1'}\n"
             "\n"
-            "def on_event(focused, event):\n"
-            "    focused.seen = getattr(focused, 'seen', 0) + 1\n",
+            "def on_event(api, event):\n"
+            "    api.log('event=' + event['kind'])\n",
         )
 
         failed = self.engine.load_plugins(self.plugins_path)
@@ -310,9 +486,11 @@ class AddonTests(PluginServerTestCase):
         self.engine.load_plugins(self.plugins_path)
 
         # Real events, through the public API: the plugin throws on each one and
-        # nothing of it may escape.
+        # nothing of it may escape.  Toggle the claim so each call is a
+        # transition; a renewal alone is deliberately not an event.
         for _ in range(3):
             self.engine.set_state(True, source="pomodoro", ttl_seconds=30)
+            self.engine.set_state(False, source="pomodoro")
 
         _status, status_payload = self.call("GET", "/status")
         noisy = [plugin for plugin in status_payload["plugins"] if plugin["id"] == "noisy"][0]

@@ -82,6 +82,14 @@ class ServerTestCase(unittest.TestCase):
 
 
 class StateProtocolTests(ServerTestCase):
+    def test_a_heartbeat_cannot_flip_dry_run(self):
+        self.call(
+            "POST", "/focus/state",
+            {"active": True, "dry_run": True, "ttl_seconds": 30},
+        )
+
+        self.assertFalse(self.engine.dry_run)
+
     def test_status_reports_the_engine(self):
         status, payload = self.call("GET", "/status")
 
@@ -329,6 +337,26 @@ class ErrorTests(ServerTestCase):
 
         self.assertEqual(404, status)
         self.assertFalse(payload["ok"])
+
+
+class RuleValidationProtocolTests(ServerTestCase):
+    def test_a_catch_all_rule_is_a_400(self):
+        status, payload = self.call("PUT", "/focus/rules", {"names": ["*"]})
+
+        self.assertEqual(400, status)
+        self.assertIn("catch-all", payload["error"])
+
+    def test_a_normal_rule_is_accepted(self):
+        status, payload = self.call("PUT", "/focus/rules", {"names": ["firefox"]})
+
+        self.assertEqual(200, status)
+        self.assertTrue(payload["ok"])
+
+    def test_a_catch_all_blacklist_is_refused_by_config(self):
+        status, payload = self.call("PATCH", "/config", {"blacklist": {"names": ["*"]}})
+
+        self.assertEqual(400, status)
+        self.assertIn("catch-all", payload["error"])
 
 
 if __name__ == "__main__":

@@ -41,7 +41,7 @@ focused_is_up() {
     elif command -v wget >/dev/null 2>&1; then
         wget -q -T 1 -O /dev/null "$url" >/dev/null 2>&1
     else
-        pgrep -f 'focusedd' >/dev/null 2>&1
+        pgrep -f 'focused|focusedd' >/dev/null 2>&1
     fi
 }
 

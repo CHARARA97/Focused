@@ -24,7 +24,7 @@
 - 想要原生托盘/菜单的插件可以自己做（走同一套 HTTP 契约），核心不替它决定。
 
 **独立可用意味着**：装完就有完整功能，不需要游戏、不需要浏览器扩展。
-`~/.config/focused/config.json` 里写一个黑名单，`focusedd --session 25` 就能用。
+`~/.config/focused/config.json` 里写一个黑名单，`focused --session 25` 就能用。
 
 ---
 
@@ -160,7 +160,7 @@ def on_event(focused, event):     # 事件回调，短小、不要阻塞
 ## 5. 独立使用路径（三个入口，同一引擎）
 
 1. **看板**：`http://127.0.0.1:8766/` —— 选名单、开始专注、看冻结、放行、恢复。
-2. **CLI**：`focusedd --session 25` / `--status` / `--frozen` / `--thaw-all` /
+2. **CLI**：`focused --session 25` / `--status` / `--frozen` / `--thaw-all` /
    `--add-name firefox` / `--add-url reddit.com`（脚本与快捷键友好）。
 3. **HTTP**：任何语言的小插件或 `curl`。
 

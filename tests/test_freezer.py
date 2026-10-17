@@ -8,7 +8,10 @@ import json
 import os
 import signal
 import tempfile
+import threading
+import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from focused.core import cgroupfs
@@ -125,6 +128,14 @@ class FreezePidTests(FreezerTestCase):
         self.assertEqual([4242, 4243, 4244], sink.stop_calls())
         self.assertEqual(MODE_PID, entry.mode)
         self.assertEqual((4242, 4243, 4244), entry.pids)
+
+    def test_a_missing_starttime_guard_refuses_the_root(self):
+        sink = Sink()
+        freezer = self.freezer(FakeProcFS({4242: 1000}), sink)
+        target = Target(pid=4242, name="firefox", pids=(4242,), guard={}, mode=MODE_PID)
+
+        self.assertIsNone(freezer.freeze(target))
+        self.assertEqual([], sink.stop_calls())
 
     def test_the_record_is_on_disk_before_the_caller_knows(self):
         freezer = self.freezer(FakeProcFS({4242: 1000}))
@@ -423,6 +434,199 @@ class FreezeSafetyTests(FreezerTestCase):
 
         self.assertIsNone(freezer.freeze(target_for(mode=MODE_UNIT, unit="app-firefox-7.scope", cgroup=APP)))
         self.assertEqual([], [call for call in calls if call[0] == "freeze"])
+
+
+class ThawConfirmationTests(FreezerTestCase):
+    def test_a_thaw_that_does_not_confirm_keeps_the_record(self):
+        entry = Frozen(
+            pid=4242,
+            name="firefox",
+            mode=MODE_UNIT,
+            since=0.0,
+            unit="app-firefox-7.scope",
+            cgroup="/",
+            pids=(4242,),
+            guards={4242: 1000},
+        )
+        freezer = self.freezer(
+            FakeProcFS({}, frozen=True),
+            unit_runner=lambda args, timeout=5.0: (0, ""),
+            confirm_timeout_ms=10,
+        )
+
+        freezer._entries[entry.pid] = entry
+        with mock.patch.object(freezer, "_write_cgroup_freeze", return_value=True):
+            self.assertFalse(freezer.thaw(entry))
+
+        self.assertEqual([entry], freezer.entries())
+
+    def test_confirm_thawed_reads_the_cgroup_state(self):
+        still_frozen = self.freezer(FakeProcFS({}, frozen=True), confirm_timeout_ms=10)
+        resumed = self.freezer(FakeProcFS({}, frozen=False), confirm_timeout_ms=10)
+
+        self.assertFalse(still_frozen._confirm_thawed("/"))
+        self.assertTrue(resumed._confirm_thawed("/"))
+
+
+class LockScopeTests(FreezerTestCase):
+    def test_status_does_not_wait_for_a_slow_freeze(self):
+        freezer = self.freezer(FakeProcFS({4242: 1000}))
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow(target, reason):
+            started.set()
+            release.wait(1.0)
+            return Frozen(
+                pid=target.pid,
+                name=target.name,
+                mode=MODE_PID,
+                since=0.0,
+                pids=(target.pid,),
+                guards={target.pid: 1000},
+            )
+
+        result = []
+        with mock.patch.object(freezer, "_freeze_pids", side_effect=slow):
+            thread = threading.Thread(
+                target=lambda: result.append(freezer.freeze(target_for(pid=4242))),
+                daemon=True,
+            )
+            thread.start()
+            self.assertTrue(started.wait(1.0))
+            before = time.monotonic()
+            freezer.entries()
+            elapsed = time.monotonic() - before
+            release.set()
+            thread.join(1.0)
+
+        self.assertLess(elapsed, 0.2)
+        self.assertIsNotNone(result[0])
+
+    def test_cancelled_freeze_keeps_record_when_thaw_fails(self):
+        freezer = self.freezer(FakeProcFS({4242: 1000}))
+        started = threading.Event()
+        release = threading.Event()
+        entry = Frozen(
+            pid=4242,
+            name="firefox",
+            mode=MODE_PID,
+            since=0.0,
+            pids=(4242,),
+            guards={4242: 1000},
+        )
+
+        def slow(target, reason):
+            started.set()
+            release.wait(1.0)
+            return entry
+
+        result = []
+        with mock.patch.object(freezer, "_freeze_pids", side_effect=slow),              mock.patch.object(freezer, "_thaw_entry", return_value=False):
+            thread = threading.Thread(
+                target=lambda: result.append(freezer.freeze(target_for(pid=4242))),
+                daemon=True,
+            )
+            thread.start()
+            self.assertTrue(started.wait(1.0))
+            freezer.thaw_all("race")
+            release.set()
+            thread.join(1.0)
+
+        self.assertIsNone(result[0])
+        self.assertEqual([entry], freezer.entries())
+
+    def test_thaw_all_cancels_an_inflight_freeze(self):
+        freezer = self.freezer(FakeProcFS({4242: 1000}))
+        started = threading.Event()
+        release = threading.Event()
+        entry = Frozen(
+            pid=4242,
+            name="firefox",
+            mode=MODE_PID,
+            since=0.0,
+            pids=(4242,),
+            guards={4242: 1000},
+        )
+
+        def slow(target, reason):
+            started.set()
+            release.wait(1.0)
+            return entry
+
+        result = []
+        with mock.patch.object(freezer, "_freeze_pids", side_effect=slow),              mock.patch.object(freezer, "_thaw_entry", return_value=True):
+            thread = threading.Thread(
+                target=lambda: result.append(freezer.freeze(target_for(pid=4242))),
+                daemon=True,
+            )
+            thread.start()
+            self.assertTrue(started.wait(1.0))
+            freezer.thaw_all("race")
+            release.set()
+            thread.join(1.0)
+
+        self.assertEqual([], freezer.entries())
+        self.assertIsNone(result[0])
+
+
+class StoppedCountTests(FreezerTestCase):
+    def test_recorded_and_stopped_are_different(self):
+        class States(FakeProcFS):
+            def __init__(self):
+                super().__init__({4242: 1000, 4243: 1001})
+                self.states = {4242: "T", 4243: "S"}
+
+            def read(self, pid):
+                return SimpleNamespace(state=self.states.get(pid, "S"))
+
+        freezer = self.freezer(States())
+        freezer._entries[4242] = Frozen(
+            pid=4242, name="a", mode=MODE_PID, since=0.0,
+            pids=(4242, 4243), guards={4242: 1000, 4243: 1001},
+        )
+
+        self.assertEqual([4242, 4243], freezer.recorded_pids())
+        self.assertEqual([4242], freezer.stopped_pids())
+        self.assertEqual(1, freezer.frozen_count())
+
+    def test_a_unit_freeze_counts_children_started_after_it(self):
+        class States(FakeProcFS):
+            def read(self, pid):
+                return SimpleNamespace(state={4242: "T", 4243: "T", 4244: "S"}[pid])
+
+        freezer = self.freezer(States())
+        freezer._entries[4242] = Frozen(
+            pid=4242, name="browser", mode=MODE_UNIT, since=0.0,
+            cgroup="/app.slice/browser.scope", pids=(4242,),
+            guards={4242: 1000},
+        )
+
+        with mock.patch.object(cgroupfs, "unit_members", return_value=[4242, 4243, 4244]):
+            self.assertEqual([4242, 4243], freezer.stopped_pids())
+            self.assertEqual(2, freezer.frozen_count())
+
+
+class SaveFailureTests(FreezerTestCase):
+    def test_a_freeze_that_cannot_be_saved_is_rolled_back(self):
+        freezer = self.freezer(FakeProcFS({4242: 1000}))
+        target = target_for(pid=4242)
+
+        with mock.patch.object(freezer, "_save", return_value=False),              mock.patch.object(freezer, "_thaw_entry", return_value=True):
+            entry = freezer.freeze(target)
+
+        self.assertIsNone(entry)
+        self.assertEqual([], freezer.entries())
+
+    def test_a_freeze_that_cannot_be_saved_or_undone_keeps_memory_record(self):
+        freezer = self.freezer(FakeProcFS({4242: 1000}))
+        target = target_for(pid=4242)
+
+        with mock.patch.object(freezer, "_save", return_value=False),              mock.patch.object(freezer, "_thaw_entry", return_value=False):
+            entry = freezer.freeze(target)
+
+        self.assertIsNotNone(entry)
+        self.assertEqual([entry], freezer.entries())
 
 
 class FrozenCountTests(FreezerTestCase):

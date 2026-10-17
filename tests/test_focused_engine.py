@@ -518,5 +518,237 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(["reddit.com"], loaded.urls.patterns)
 
 
+class PidRuleTests(EngineTestCase):
+    def test_apply_rules_fills_the_starttime_guard(self):
+        engine = self.engine()
+
+        engine.apply_rules({"pids": [self.burner.pid]}, source="plugin")
+
+        entry = engine.sources()["plugin"]
+        expected = engine.procfs.starttime(self.burner.pid)
+        self.assertEqual([self.burner.pid], entry["pids"])
+        self.assertEqual(expected, entry["pid_guards"][self.burner.pid])
+
+    def test_a_gone_pid_is_rejected(self):
+        engine = self.engine()
+
+        with self.assertRaises(ValueError):
+            engine.apply_rules({"pids": [999_999_999]}, source="plugin")
+
+    def test_a_mismatched_guard_is_rejected(self):
+        engine = self.engine()
+
+        with self.assertRaises(ValueError):
+            engine.apply_rules(
+                {"pids": [self.burner.pid], "pid_guards": {self.burner.pid: 1}},
+                source="plugin",
+            )
+
+    def test_pid_zero_or_one_is_rejected(self):
+        engine = self.engine()
+
+        with self.assertRaises(ValueError):
+            engine.apply_rules({"pids": [1]}, source="plugin")
+
+
+    def test_thaw_all_clears_the_handled_cache(self):
+        engine = self.engine()
+        engine._freeze_service._handled[4242] = (None, time.time() + 30)
+
+        engine.thaw_all("test")
+
+        self.assertEqual({}, engine._freeze_service._handled)
+
+
+class ScanTimingTests(EngineTestCase):
+    def test_status_reports_scan_latency(self):
+        engine = self.engine()
+
+        engine.scan_once()
+        summary = engine.status()["scan_ms"]
+
+        self.assertGreaterEqual(summary["last"], 0.0)
+        self.assertEqual(1, summary["samples"])
+
+
+class _FakeFreezer:
+    """Enough of Freezer for config/session tests; never signals anything."""
+
+    def __init__(self, entries=None):
+        self._entries = dict(entries or {})
+        self.thawed = 0
+
+    def entries(self):
+        return list(self._entries.values())
+
+    def __len__(self):
+        return len(self._entries)
+
+    def __bool__(self):
+        # FocusedEngine uses ``freezer or Freezer(...)``; an empty fake must
+        # still be recognised as the freezer we handed over.
+        return True
+
+    def ensure_loaded(self):
+        pass
+
+    def thaw_all(self, reason=""):
+        count = len(self._entries)
+        self._entries.clear()
+        self.thawed += count
+        return count
+
+
+class _CollectingAudit:
+    def __init__(self):
+        self.records = []
+
+    def write(self, record):
+        self.records.append(record)
+        return True
+
+    def close(self):
+        pass
+
+
+class _CountingLog:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, message):
+        self.lines.append(message)
+
+    def warning(self, message):
+        pass
+
+    def error(self, message):
+        pass
+
+    def debug(self, message):
+        pass
+
+
+class ConfigPersistenceTests(unittest.TestCase):
+    def make_engine(self, tmp, freezer=None):
+        path = os.path.join(tmp, "config.json")
+        config = Config.from_dict(
+            {
+                "audit_log": "",
+                "freeze": {
+                    "enabled": True,
+                    "state_path": os.path.join(tmp, "frozen.json"),
+                },
+            },
+            path=path,
+        )
+        engine = FocusedEngine(
+            config,
+            freezer=freezer,
+            logger=None,
+            uid=os.getuid(),
+            self_pid=999_001,
+            self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
+            unified_cgroup2=True,
+        )
+        return engine, path
+
+    def test_a_blacklist_patch_is_written_to_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, path = self.make_engine(tmp)
+
+            engine.update_config({"blacklist": {"names": ["firefox"]}})
+
+            loaded = Config.load(path)
+            self.assertEqual({"firefox"}, set(loaded.rules.names))
+
+    def test_a_partial_patch_keeps_the_previous_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, path = self.make_engine(tmp)
+
+            engine.update_config({"blacklist": {"names": ["firefox"]}})
+            engine.update_config({"blacklist": {"cmdline_substrings": ["--profile"]}})
+
+            loaded = Config.load(path)
+            self.assertEqual({"firefox"}, set(loaded.rules.names))
+            self.assertEqual(("--profile",), loaded.rules.cmdline_substrings)
+
+    def test_a_catch_all_blacklist_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, path = self.make_engine(tmp)
+
+            with self.assertRaises(ValueError):
+                engine.update_config({"blacklist": {"names": ["*"]}})
+
+            self.assertEqual([], sorted(engine.rules().names))
+            loaded = Config.load(path)
+            self.assertEqual([], sorted(loaded.rules.names))
+
+    def test_disabling_freeze_releases_the_recorded_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            freezer = _FakeFreezer()
+            engine, _path = self.make_engine(tmp, freezer=freezer)
+            freezer._entries[4242] = object()
+
+            engine.update_config({"freeze": {"enabled": False}})
+
+            self.assertEqual(0, len(freezer))
+            self.assertEqual(1, freezer.thawed)
+
+
+class HeartbeatIdempotencyTests(unittest.TestCase):
+    def make_engine(self, tmp):
+        path = os.path.join(tmp, "config.json")
+        config = Config.from_dict(
+            {
+                "audit_log": "",
+                "freeze": {
+                    "enabled": True,
+                    "state_path": os.path.join(tmp, "frozen.json"),
+                },
+            },
+            path=path,
+        )
+        return FocusedEngine(
+            config,
+            logger=None,
+            uid=os.getuid(),
+            self_pid=999_001,
+            self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
+            unified_cgroup2=True,
+        )
+
+    def test_renewing_a_claim_is_not_an_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self.make_engine(tmp)
+            engine.audit = _CollectingAudit()
+            engine.logger = _CountingLog()
+
+            for _ in range(5):
+                engine.set_state(True, source="game-timer", ttl_seconds=30)
+
+            self.assertEqual(1, len(engine.audit.records))
+            self.assertEqual(1, len(engine.logger.lines))
+
+            engine.set_state(False, source="game-timer")
+            engine.set_state(False, source="game-timer")
+
+            # The first withdrawal is a transition; the second is a no-op.
+            self.assertEqual(2, len(engine.audit.records))
+            self.assertEqual(2, len(engine.logger.lines))
+
+    def test_a_renewal_does_not_rewrite_the_plugin_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self.make_engine(tmp)
+            record = engine.plugins.register(name="probe")
+            saves = []
+            engine.plugins.save = lambda: saves.append(1)
+
+            for _ in range(5):
+                engine.set_state(True, source=record.id, ttl_seconds=30)
+
+            # First claim persists; renewals only refresh last_seen in memory.
+            self.assertEqual(1, len(saves))
+
+
 if __name__ == "__main__":
     unittest.main()

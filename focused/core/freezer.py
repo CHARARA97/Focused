@@ -180,6 +180,12 @@ class Freezer:
         self._confirm_timeout = max(0.0, confirm_timeout_ms / 1000.0)
         self._entries: Dict[int, Frozen] = {}
         self._lock = threading.RLock()
+        # Slow I/O (systemctl, the kernel confirmation, state-file writes) runs
+        # outside ``_lock`` so /status keeps answering.  These sets stop two
+        # operations for the same target from racing each other.
+        self._inflight: set = set()
+        self._thawing: set = set()
+        self._thaw_generation = 0
         self._loaded = False
         #: unit -> retry-after timestamp, for units whose thaw failed.
         self._refused: Dict[str, float] = {}
@@ -231,9 +237,9 @@ class Freezer:
             if not self._loaded:
                 self.load()
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         if not self.state_path:
-            return
+            return True
         payload = {
             "version": STATE_VERSION,
             "updated": self._clock(),
@@ -247,11 +253,14 @@ class Freezer:
             with open(tmp, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2, ensure_ascii=False, sort_keys=True)
                 handle.write("\n")
+            os.chmod(tmp, 0o600)
             os.replace(tmp, self.state_path)
+            return True
         except OSError as exc:
             # Not fatal for the freeze itself, but the caller must know that the
             # crash-recovery guarantee is gone.
             self._log("error", "cannot write freeze state to %s: %s" % (self.state_path, exc))
+            return False
 
     def _ordered(self) -> List[Frozen]:
         return [self._entries[pid] for pid in sorted(self._entries)]
@@ -268,14 +277,12 @@ class Freezer:
         with self._lock:
             return len(self._entries)
 
-    def frozen_pids(self) -> List[int]:
-        """Every pid currently suspended, each counted once.
+    def recorded_pids(self) -> List[int]:
+        """Every pid in the records, each once (compatibility: ``frozen_pids``).
 
-        One record carries a whole process tree, and trees overlap: a browser's
-        zygotes appear in the tree of every entry point that reaches them.  The
-        number of records is therefore not the number of suspended processes --
-        reporting it as one made the dashboard claim two frozen processes while
-        twenty were stopped.
+        This is the *recorded* set: a unit freeze can later start new children,
+        and a pid can exit while its record remains.  Use ``stopped_pids`` for
+        "actually in T state right now".
         """
         with self._lock:
             pids = set()
@@ -283,27 +290,140 @@ class Freezer:
                 pids.update(entry.pids or (entry.pid,))
             return sorted(pids)
 
+    def frozen_pids(self) -> List[int]:
+        """Backward-compatible alias for :meth:`recorded_pids`."""
+        return self.recorded_pids()
+
+    def stopped_pids(self) -> List[int]:
+        """Pids that are actually stopped (``T``/``t``) right now.
+
+        For a unit record the cgroup can contain children started *after* the
+        freeze, so the current member list is used in addition to the recorded
+        tree.  A fake procfs without ``read()`` falls back to the recorded set.
+        """
+        recorded = self.recorded_pids()
+        candidates = set(recorded)
+        with self._lock:
+            entries = self._ordered()
+        for entry in entries:
+            if entry.mode == MODE_UNIT and entry.cgroup:
+                members = cgroupfs.unit_members(entry.cgroup)
+                if members:
+                    candidates.update(members)
+        reader = getattr(self.procfs, "read", None)
+        if reader is None:
+            return sorted(candidates)
+        stopped: List[int] = []
+        for pid in sorted(candidates):
+            try:
+                proc = reader(pid)
+            except Exception:
+                continue
+            if proc is not None and getattr(proc, "state", "") in ("T", "t"):
+                stopped.append(pid)
+        return stopped
+
     def frozen_count(self) -> int:
-        """How many processes are suspended right now."""
-        return len(self.frozen_pids())
+        """How many recorded processes are actually in T state right now."""
+        return len(self.stopped_pids())
 
     # -- freezing ----------------------------------------------------------
 
     def freeze(self, target: Target, reason: str = "") -> Optional[Frozen]:
-        """Suspend a target.  Returns the record, or None when nothing was frozen."""
+        """Suspend a target.  Returns the record, or None when nothing was frozen.
+
+        The slow part runs without ``_lock``.  A concurrent ``thaw_all`` bumps
+        the generation, and a freeze that started before it is undone instead of
+        being stored after the thaw.
+        """
         with self._lock:
             if target.pid in self._entries:
                 return self._entries[target.pid]
+            if target.pid in self._inflight or target.pid in self._thawing:
+                return None
+            self._inflight.add(target.pid)
+            generation = self._thaw_generation
 
+        entry = None
+        try:
             if target.mode == MODE_UNIT and target.unit:
                 entry = self._freeze_unit(target, reason)
             else:
                 entry = self._freeze_pids(target, reason)
+        finally:
+            with self._lock:
+                self._inflight.discard(target.pid)
 
-            if entry is not None:
+        if entry is None:
+            return None
+
+        saved = True
+        with self._lock:
+            cancelled = generation != self._thaw_generation
+            if not cancelled:
+                self._entries[entry.pid] = entry
+                saved = self._save()
+        if not cancelled and not saved:
+            # A freeze that cannot be recorded is not crash-recoverable.  Undo
+            # it if possible; if the undo fails, keep the in-memory record so
+            # this process can still thaw it and report it in status.
+            with self._lock:
+                self._entries.pop(entry.pid, None)
+            try:
+                undone = self._thaw_entry(entry)
+            except Exception:
+                undone = False
+            if undone:
+                self._log(
+                    "error",
+                    "freeze of pid=%d (%s) rolled back: state file is not writable"
+                    % (entry.pid, entry.name),
+                )
+                return None
+            with self._lock:
                 self._entries[entry.pid] = entry
                 self._save()
+            self._log(
+                "error",
+                "freeze of pid=%d (%s) could not be saved and could not be undone; "
+                "keeping the in-memory record" % (entry.pid, entry.name),
+            )
             return entry
+        if cancelled:
+            # A thaw raced this freeze.  Undo it rather than leave a suspension
+            # nobody asked to keep.  If the undo fails, the record is the only
+            # evidence that the process may still be stopped: keep it.
+            try:
+                undone = self._thaw_entry(entry)
+            except Exception as exc:
+                undone = False
+                self._log(
+                    "error",
+                    "cancelled freeze of pid=%d (%s) raised while thawing: %s"
+                    % (entry.pid, entry.name, exc),
+                )
+            if not undone:
+                with self._lock:
+                    self._entries[entry.pid] = entry
+                    if not self._save():
+                        self._log(
+                            "error",
+                            "cannot persist the retained record for pid=%d (%s)"
+                            % (entry.pid, entry.name),
+                        )
+                self._log(
+                    "error",
+                    "freeze of pid=%d (%s) was cancelled but thaw failed; keeping record"
+                    % (entry.pid, entry.name),
+                )
+            else:
+                self._log(
+                    "info",
+                    "freeze of pid=%d (%s) cancelled by a concurrent thaw"
+                    % (entry.pid, entry.name),
+                )
+            return None
+        return entry
 
     def _freeze_pids(self, target: Target, reason: str) -> Optional[Frozen]:
         pids = list(target.pids or (target.pid,))
@@ -314,6 +434,17 @@ class Freezer:
         failures: List[str] = []
         for pid in pids:
             expected = target.guard_for(pid)
+            if expected is None:
+                # No start time means we cannot exclude PID reuse.  Never signal
+                # a process we cannot identify; the engine's safety gate already
+                # rejects this, and the freezer refuses it as well.
+                self._log(
+                    "error",
+                    "freeze refused pid=%d (%s): no starttime guard" % (pid, target.name),
+                )
+                if pid == target.pid:
+                    return None
+                continue
             current = self.procfs.starttime(pid) if hasattr(self.procfs, "starttime") else None
             if current is None:
                 # Gone between the snapshot and now: nothing to suspend.
@@ -321,7 +452,7 @@ class Freezer:
                     self._log("info", "freeze skipped pid=%d (%s): already gone" % (pid, target.name))
                     return None
                 continue
-            if expected is not None and current != expected:
+            if current != expected:
                 self._log(
                     "warning",
                     "freeze skipped pid=%d (%s): pid was reused (starttime %s != %s)"
@@ -529,6 +660,29 @@ class Freezer:
                 return False
             self._sleep(0.05)
 
+    def _confirm_thawed(self, cgroup_path: str) -> bool:
+        """Wait for the kernel to report ``frozen 0`` after a thaw.
+
+        ``systemctl thaw`` can return 0 while ``cgroup.events`` still says
+        ``frozen 1``.  Settling the record then would leave the process suspended
+        with no evidence; keep it and let the caller retry.
+        """
+        if not cgroup_path:
+            return True
+        deadline = self._clock() + self._confirm_timeout
+        while True:
+            try:
+                state = self.procfs.cgroup_frozen(cgroup_path)
+            except Exception:
+                state = None
+            if state is False:
+                return True
+            if state is None and not os.path.exists(cgroup_path):
+                return True
+            if self._clock() >= deadline:
+                return False
+            self._sleep(0.05)
+
     # -- thawing -----------------------------------------------------------
 
     def thaw_unit(self, unit: str, cgroup_path: str = "", reason: str = "") -> bool:
@@ -556,6 +710,13 @@ class Freezer:
             if not self._write_cgroup_freeze(cgroup_path, "0") and not ok:
                 # Both routes failed; report it so the entry is kept for retry.
                 return False
+            if not self._confirm_thawed(cgroup_path):
+                self._log(
+                    "warning",
+                    "thaw of %s was not confirmed (cgroup.events still frozen); "
+                    "keeping the record for retry" % (unit or cgroup_path),
+                )
+                return False
         return ok
 
     def thaw(self, entry: Frozen, reason: str = "") -> bool:
@@ -565,17 +726,30 @@ class Freezer:
         provably gone (``starttime`` unreadable, or the PID belongs to somebody
         else now).  Only a real failure -- a signal that could not be delivered,
         an unwritable cgroup -- returns False and keeps the record for the next
-        attempt.
+        attempt.  The slow I/O runs outside ``_lock``.
         """
         with self._lock:
+            if entry.pid in self._thawing:
+                return False
+            self._thawing.add(entry.pid)
+        try:
             ok = self._thaw_entry(entry)
             if ok:
-                self._entries.pop(entry.pid, None)
-                self._save()
+                with self._lock:
+                    self._entries.pop(entry.pid, None)
+                    saved = self._save()
+                if not saved:
+                    self._log(
+                        "error",
+                        "thawed pid=%d but could not update the state file" % entry.pid,
+                    )
                 self._log(
                     "info", "thawed pid=%d (%s) mode=%s reason=%s" % (entry.pid, entry.name, entry.mode, reason or entry.reason)
                 )
             return ok
+        finally:
+            with self._lock:
+                self._thawing.discard(entry.pid)
 
     def _thaw_entry(self, entry: Frozen) -> bool:
         if entry.mode == MODE_UNIT and (entry.unit or entry.cgroup):
@@ -614,6 +788,7 @@ class Freezer:
     def thaw_all(self, reason: str = "") -> int:
         """Settle every recorded target.  Returns how many records were settled."""
         with self._lock:
+            self._thaw_generation += 1
             entries = self._ordered()
         count = 0
         for entry in entries:

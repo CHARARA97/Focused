@@ -1,110 +1,58 @@
-# 发布后端
+# 发布到 GitHub
 
-版本号的唯一来源是 `pyproject.toml` 的 `version`；`focused/__init__.py` 与
-`packaging/aur/focused/PKGBUILD` 的 `pkgver` 由 `tests/test_version.py` 校验一致。
+发布以 **tag** 为唯一触发点；日常提交不影响 release。
 
-## 1. 提交前
+## 1. 版本
 
-```bash
-scripts/run-tests.sh              # 全部测试
-scripts/run-tests.sh --offline    # 无网络时使用本地包缓存
-```
+同时改：
 
-## 2. 构建产物
+- `focused/__init__.py` 的 `__version__`
+- `pyproject.toml` 的 `version`
+- `CHANGELOG.md`
 
-```bash
-python -m build --no-isolation
-```
+版本必须与 tag 一致：tag `v0.2.0` ↔ `0.2.0`。
 
-`--no-isolation` 使用已安装的 `setuptools` 与 `wheel`，不在构建时联网下载构建依赖。
-产物为 `dist/focusd-<版本>-py3-none-any.whl` 与 `dist/focusd-<版本>.tar.gz`。
-
-构建后确认安装路径仍然可用（不需要 pip、不需要虚拟环境）：
+## 2. 本地验收
 
 ```bash
-TMP=$(mktemp -d)
-HOME="$TMP" scripts/install.sh --no-service \
-    --wheel "file://$PWD/dist/focusd-<版本>-py3-none-any.whl" --scripts-dir "$PWD/scripts"
-HOME="$TMP" "$TMP/.local/bin/focusedd" --version
-rm -rf "$TMP"
+python3 -m pytest -q
+python3 -m build
+python3 -m venv /tmp/focused-venv
+/tmp/focused-venv/bin/pip install dist/*.whl
+/tmp/focused-venv/bin/focused --version
+/tmp/focused-venv/bin/focused --help
 ```
 
-### 改了仓库里的源码之后
-
-必须先提交，再用**当前 HEAD** 重新生成归档并刷新校验和 —— `makepkg` 用的是归档，不是你的工作树：
+## 3. 推送并打 tag
 
 ```bash
-cd /path/to/the/repository
-git add -A && git commit -m "..."
-scripts/make-aur-archive.sh          # 重打归档 + 刷新校验和 + .SRCINFO
-cd packaging/aur/focused && makepkg -si
+git add -A
+git commit -m "release: v0.2.0"
+git push origin main
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-`scripts/make-aur-archive.sh` 会：解析仓库根、从 `pyproject.toml` 取版本、把归档写到
-`packaging/aur/<包名>/` 下**正确的位置**、校验归档里确实包含 `check()` 与 `package()` 需要的文件、
-再刷新校验和与 `.SRCINFO`。未提交的改动会被列出来提醒（它们不会进归档）。
+## 4. 自动发布
 
-忽略这一步的典型症状：`check()` 报某个脚本不存在，或者装出来的包缺少你刚改的东西
-（`git archive HEAD` 读的是提交，不是工作区）。PKGBUILD 的 `check()` 会在归档过旧时直接报错并给出上面这段命令。
+`.github/workflows/release.yml` 在 `v*` tag 上执行：
 
-## 3. 打标签并发布
+1. 跑完整后端测试；
+2. 校验 tag 与包版本一致；
+3. 构建 wheel + sdist；
+4. 在独立 venv 里安装 wheel 并运行 `focused --version/--help`；
+5. 生成 `SHA256SUMS`；
+6. 把 `install.sh`、`doctor-focused.sh`、`launch-focused.sh`、wheel、sdist 上传为 Release 资产；
+7. 创建 GitHub Release。
 
-发布资产使用**稳定文件名**，这样 `releases/latest/download/<名字>` 永远有效
-（安装脚本按这些名字下载自身所需的辅助脚本）：
-
-```
-install.sh             ← scripts/install.sh
-focused-launch.sh      ← scripts/launch-focused.sh
-focused-doctor.sh      ← scripts/doctor-focused.sh
-focusd-<版本>-py3-none-any.whl
-focusd-<版本>.tar.gz
-```
+## 5. 发布后验证
 
 ```bash
-git tag -a v0.1.0 -m "Focused 0.1.0"
-git push origin v0.1.0
-
-mkdir -p dist/release
-cp scripts/install.sh         dist/release/install.sh
-cp scripts/launch-focused.sh  dist/release/focused-launch.sh
-cp scripts/doctor-focused.sh  dist/release/focused-doctor.sh
-
-gh release create v0.1.0 dist/release/* dist/*.whl dist/*.tar.gz \
-  --title "Focused 0.1.0" --generate-notes
+gh release view v0.2.0
+curl -fsSLO https://github.com/CHARARA97/Focused/releases/latest/download/install.sh
+less install.sh          # 先读，再执行
+sh install.sh
+~/.local/bin/focused --help
 ```
 
-发布后验证文档里的两条命令：
-
-```bash
-curl -fsSL https://github.com/CHARARA97/Focused/releases/latest/download/install.sh | sh
-```
-
-## 4. AUR（待注册开放）
-
-AUR **目前关闭新用户注册**（2026 年恶意提交事件后 Arch 侧收紧），因此这一节暂时无法执行。
-PKGBUILD 已就绪并通过 `makepkg` 实测；等注册开放后，注册账号、把 SSH 公钥填进 AUR 账号设置，再按下面执行。
-
-AUR 需要**网络**（`makepkg` 要下载 tag 归档）且必须在 GitHub 标签存在之后进行：
-
-```bash
-cd packaging/aur/focused
-updpkgsums                      # 把 PKGBUILD 里的 sha256sums=('SKIP') 换成真实校验和
-makepkg --printsrcinfo > .SRCINFO
-namcap PKGBUILD                 # 可选的规范检查
-makepkg -si                     # 本地安装验证
-
-# 推送：AUR 的每个包是独立 git 仓库
-git clone ssh://aur@aur.archlinux.org/focused.git /tmp/aur-focused
-cp PKGBUILD focused.install .SRCINFO /tmp/aur-focused/
-cd /tmp/aur-focused && git add -A && git commit -m "0.1.0-1" && git push
-```
-
-`focused-git` 同理，包名换成 `focused-git`，不需要 `.install`。
-
-### PKGBUILD 为什么用 `noextract` + `prepare()`
-
-GitHub 的归档解出来的顶层目录是 `<仓库名>-<tag 去掉 v>`，即 `Focused-0.1.0`，而包名是
-`focused`。与其在 `build()/check()/package()` 里猜目录名，PKGBUILD 自己用
-`bsdtar --strip-components=1` 解到固定的 `$srcdir/src`，因此仓库改名或 tag 格式变化都不会
-再让它失败。`makepkg` 生成的 `src/`、`pkg/` 是构建残留，可以随时删除。
-
+`install.sh` 会自动取 latest release 的 wheel 和两个 helper 脚本。

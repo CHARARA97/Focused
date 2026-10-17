@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "focusd"
 #: Kept in step with focused/__init__.py by tests/test_version.py.
-version = "0.1.0"
+version = "0.2.0"
 description = "Suspend distracting applications while you focus, and resume them after."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -34,9 +34,12 @@ Documentation = "https://github.com/CHARARA97/Focused/blob/main/docs/focused.md"
 Issues = "https://github.com/CHARARA97/Focused/issues"
 
 [project.scripts]
-focusedd = "focused.cli:main"
+focused = "focusedd:main"
+focusedd = "focusedd:main"   # compatibility alias
 
 [tool.setuptools]
-#: The package plus its engine.  The systemd unit is not package data: it lives in
-#: packaging/ and the installer (or the AUR PKGBUILD) puts it where systemd looks.
-packages = ["focused", "focused.core"]
+#: The CLI lives at the project root; all implementation is under focused/.
+py-modules = ["focusedd"]
+
+[tool.setuptools.packages.find]
+include = ["focused*"]

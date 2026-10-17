@@ -20,10 +20,10 @@ DEFAULT_PROTECT_NAMES = frozenset({
     "bubblewrap", "bun", "busybox", "bwrap",
     "bzip2", "cage", "cargo", "cat",
     "cc", "chillfocus-laun", "chillfocusd", "chmod",
-    # The backend itself, and its launcher: focusedd holds the frozen state, so
+    # The backend itself, and its launcher: focused holds the frozen state, so
     # freezing it would be the one mistake nothing could recover from.  The
     # engine also refuses to touch its own pid, but a name rail costs nothing.
-    "focusedd", "focused-launch", "focusedd.py",
+    "focused", "focused.py", "focusedd", "focused-launch", "focusedd.py",
     "chown", "chrome_crashpad", "cinnamon", "cinnamon-sessio",
     "cinnamon-settin", "clang", "cliphist", "clipman",
     "cmake", "column", "comm", "conhost.exe",

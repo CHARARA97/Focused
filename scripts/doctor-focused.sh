@@ -364,7 +364,7 @@ except Exception:
 print(len(data.get("frozen") or []))' "$state_path" 2>/dev/null || echo 0)"
         if [ "${left:-0}" -gt 0 ]; then
             warn "the freeze state file still records $left suspension(s): $state_path"
-            fix "with the service stopped, clear them with: focusedd --thaw-all"
+            fix "with the service stopped, clear them with: focused --thaw-all"
         else
             ok "the freeze state file is empty"
         fi
@@ -373,12 +373,44 @@ fi
 
 # --- 8. the engine is actually running ---------------------------------------
 #
-# A scan loop that raises on every tick still answers /api/v1/status with
-# active=true, so the interface looks healthy while nothing is enforced.  The log
-# is the only place that shows it.
-if command -v journalctl >/dev/null 2>&1; then
-    # One minute, not five: a window that reaches back past a fix keeps reporting a
-    # problem that no longer exists, which is its own kind of noise.
+# The status API now carries the same Health object the UI reads.  Ask it first:
+# a scan loop that raises on every tick is degraded even while /focus answers.
+status_json=""
+if [ -n "${BACKEND_TOKEN:-}" ]; then
+    status_json="$(curl -fsS -m 2 -H "X-Focused-Token: $BACKEND_TOKEN"         "$FOCUSED_URL/api/v1/status" 2>/dev/null || true)"
+else
+    status_json="$(curl -fsS -m 2 "$FOCUSED_URL/api/v1/status" 2>/dev/null || true)"
+fi
+
+health_line=""
+if [ -n "$status_json" ]; then
+    health_line="$(printf '%s' "$status_json" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+h = d.get("health") or {}
+print("%d\t%d\t%.1f\t%s" % (
+    1 if h.get("degraded") else 0,
+    int(h.get("scan_failures") or 0),
+    float((d.get("scan_ms") or {}).get("p95") or 0.0),
+    (h.get("last_scan_error") or "").replace("\t", " ")))' 2>/dev/null || true)"
+fi
+
+if [ -n "$health_line" ]; then
+    IFS=$'\t' read -r degraded failures p95 scan_error <<< "$health_line"
+    if [ "${degraded:-0}" = "1" ]; then
+        bad "the scan loop is degraded (${failures:-0} failure(s)): nothing is being enforced"
+        [ -n "${scan_error:-}" ] && fix "last scan error: $scan_error"
+        fix "read the reason: journalctl --user -u focused -n 50 --no-pager"
+    elif [ "${failures:-0}" -gt 0 ]; then
+        warn "the scan loop has ${failures} recent failure(s): enforcement may be intermittent"
+        [ -n "${scan_error:-}" ] && fix "last scan error: $scan_error"
+    else
+        ok "the scan loop is healthy (no failures, p95 ${p95:-0} ms)"
+    fi
+    if [ "${p95:-0}" != "0.0" ] && [ "${p95%.*}" -gt 50 ] 2>/dev/null; then
+        warn "scan p95 is ${p95} ms; the 1s loop has little headroom"
+    fi
+elif command -v journalctl >/dev/null 2>&1; then
+    # Older servers do not expose /status health; keep the log-based fallback.
     scan_failures="$(journalctl --user -u focused --since '60 seconds ago' --no-pager 2>/dev/null | grep -c 'scan failed' || true)"
     case "${scan_failures:-0}" in
         ''|0) ok "the scan loop has not failed in the last minute" ;;

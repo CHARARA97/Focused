@@ -42,27 +42,22 @@
 
 ---
 
-## 2. 仓库结构：建议**单仓库（monorepo）**
+## 2. 仓库结构：三个独立项目
 
 ```
-chillfocused/                     ← GitHub 仓库名（建议）
-├── LICENSE                       ← 新增（见 §7 许可选择）
-├── README.md                     ← 面向用户：装什么、怎么用
-├── CHANGELOG.md                  ← 新增：Keep a Changelog 格式
-├── CONTRIBUTING.md               ← 新增（可选）
-├── focused/                      ← 后端应用 + pyproject.toml（新增）
-├── plugin/ChillFocused/          ← 游戏插件（BepInEx mod）
-├── focused-extension/            ← 浏览器扩展（MV3）
-├── packaging/
-│   ├── thunderstore/             ← mod 清单与图标（重写 manifest）
-│   ├── aur/focused/              ← 新增：PKGBUILD + .SRCINFO + .INSTALL
-│   └── aur/focused-git/          ← 新增：VCS 变体
-├── scripts/                      ← 安装/打包/测试脚本
-├── docs/
-└── .github/workflows/            ← 新增：ci.yml + release.yml
+workspace/
+├── focused/                      ← 后端应用 + pyproject.toml
+│   ├── focused/                  ← Python 包
+│   ├── docs/  tests/  scripts/
+│   └── packaging/focused.service
+├── chillfocus/                   ← 游戏插件（BepInEx mod）
+│   ├── ChillFocused/  ChillFocused.Tests/
+│   ├── docs/  scripts/  packaging/
+│   └── dist/  third_party/  tools/
+└── focused-extension/            ← 浏览器扩展（MV3）
 ```
 
-**单仓库的理由**：三者共享同一份协议（`docs/focused-protocol.md`）、同一个版本节奏、同一套测试入口；三个小仓库会立刻产生"改协议要同步三个 PR"的负担。AUR 需要的是**独立的 pkgbase 仓库**（`ssh://aur@aur.archlinux.org/focused.git`），这与 GitHub 上是单仓库并不冲突 —— `packaging/aur/*` 只是源码，发布时复制到 AUR 仓库即可。
+**三个独立项目的理由**：后端 `focused` 是可单独使用的产品；游戏插件和浏览器扩展只是它的两个客户端。各自有独立版本/发布节奏，但共享同一份协议（`focused/docs/focused-protocol.md`）。AUR 的 pkgbase 本来就是独立仓库，与工作区布局不冲突。
 
 ---
 
@@ -143,7 +138,7 @@ post_upgrade() { post_install; }
 pre_remove()   { systemctl --user stop focused.service 2>/dev/null || true; }
 ```
 
-> 单元文件里应当有 `ExecStopPost=/usr/bin/focusedd --config %h/.config/focused/config.json --thaw-all` ——
+> 单元文件里应当有 `ExecStopPost=/usr/bin/focused --config %h/.config/focused/config.json --thaw-all` ——
 > 这是「崩溃后仍可恢复」的兜底机制，AUR 包必须保留。
 
 ### 3.3 `focused-git` 变体
@@ -203,8 +198,8 @@ git push
 
    ```bash
    uv tool install focusd      # 或 pipx install focusd
-   focusedd --write-default-config ~/.config/focused/config.json
-   focusedd                     # 前台跑；或自己写 user unit
+   focused --write-default-config ~/.config/focused/config.json
+   focused                      # 前台跑；或自己写 user unit
    ```
 
    PyPI 需要：`pyproject.toml` + 一次 `uv build && uv publish`（或 `python -m build` + `twine upload`），并支持 **Trusted Publishing**（GitHub Actions OIDC，无需存 API token）。
@@ -215,7 +210,7 @@ git push
    curl -fsSL https://raw.githubusercontent.com/YOUR-USER/chillfocused/main/install.sh | sh
    ```
 
-   脚本要做的事：检测 `python3`（≥3.9；实测代码只用标准库）→ 下载对应 Release 的 wheel/sdist → 建 venv 到 `~/.local/share/focused/venv` → 写 `~/.local/bin/focusedd` 包装 → 装 `~/.config/systemd/user/focused.service`（含 `ExecStopPost` 兜底）→ 提示 `systemctl --user enable --now focused`。
+   脚本要做的事：检测 `python3`（≥3.9；实测代码只用标准库）→ 下载对应 Release 的 wheel/sdist → 建 venv 到 `~/.local/share/focused/venv` → 写 `~/.local/bin/focused` 包装 → 装 `~/.config/systemd/user/focused.service`（含 `ExecStopPost` 兜底）→ 提示 `systemctl --user enable --now focused`。
    *现有 `scripts/install-focused.sh` 已经做了大半，需要把"从当前 checkout 复制"改成"从 Release 下载"，并注意源里的 `focusedd.py` 路径在打包后会变成 `focused.cli`（见 §6 改动清单）。*
 
 3. **手动**：Release 里下载 wheel，`python3 -m pip install --user ./focusd-*.whl`。
@@ -244,7 +239,7 @@ git push
   除安装脚本清理外，插件启动时也扫描并在日志里警告（`PluginInstallCheck`，纯逻辑 + 9 项测试）。
 - **自检**：`scripts/doctor-focused.sh`（安装为 `focused-doctor`）逐项检查后端、游戏目录、BepInEx、
   winhttp override、DLL 份数、日志里的加载记录、两端地址与令牌是否一致；每条 ✗ 都给出确切命令。
-- **README**：`plugin/ChillFocused/README.md`（中）与 `README.en.md`（英）按这个生态的惯例写
+- **README**：`chillfocus/ChillFocused/README.md`（中）与 `README.en.md`（英）按这个生态的惯例写
   （徽章、效果演示、它解决什么问题、特性表、安装含目录结构图、与其他 Mod 的关系、许可、致谢）。
 - **Thunderstore**：该游戏**没有社区**（实测），要么先申请开版，要么走 Nexus Mods / GitHub。`packaging/thunderstore/manifest.json` 需要重写（`name: ChillFocused`、新描述、`website_url`、`dependencies` 需指向对应游戏的 BepInExPack —— 没有社区就没有 BepInExPack，这也是"先申请社区"的原因）。
 - **mod manager（r2modman/Gale）**依赖 Thunderstore 清单，社区没开之前用不了。
@@ -262,8 +257,8 @@ git push
 | # | 改动 | 为什么 |
 |---|---|---|
 | 1 | 加 `LICENSE` | 开源与 AUR 都要求；见 §7 |
-| 2 | 加 `focused/pyproject.toml`（PEP 517；`[project.scripts] focusedd = "focused.cli:main"`） | pip/PyPI/AUR/uv 全部依赖它 |
-| 3 | 把 `focusedd.py` 收进包内（`focused/focused/cli.py`），根目录留一个 shim | 打包安装后才有一个可执行入口；现有脚本仍可用 shim |
+| 2 | 加 `focused/pyproject.toml`（PEP 517；`[project.scripts] focused = "focusedd:main"`） | pip/PyPI/AUR/uv 全部依赖它 |
+| 3 | 保留 `focusedd.py` 作为模块，console script 指向 `focusedd:main` | pip/pipx/AUR 安装后得到 `focused` 命令 |
 | 4 | 版本单一来源：`focused/__init__.py:__version__`，`pyproject.toml` 用动态版本读取 | 避免两处版本漂移 |
 | 5 | `CHANGELOG.md`（Keep a Changelog） | 用户与商店/平台都要看 |
 | 6 | 重写 `packaging/thunderstore/manifest.json` | 现内容是旧产品名与"终止进程"的过时描述 |
@@ -317,7 +312,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: '8.0.x' }
-      - run: dotnet test plugin/ChillFocused.Tests/ChillFocused.Tests.csproj
+      - run: dotnet test chillfocus/ChillFocused.Tests/ChillFocused.Tests.csproj
 ```
 
 `release.yml`：tag 触发（`focused-v*` / `plugin-v*` / `ext-v*`）→ 构建 wheel+sdist、mod zip、extension zip → 作为 Release 资产上传；PyPI 用 Trusted Publishing；AUR 更新**不要**做成无人工的全自动（官方警告）；可以用 `KSXGitHub/github-actions-deploy-aur` 之类工具，但每次仍应本地 `makepkg -si` 验证。

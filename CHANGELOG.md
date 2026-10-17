@@ -3,6 +3,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号见
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-10-17
+
+### 变更
+- 后端重构完成：`domain/` / `core/` / `app/` / `api/` / `plugins/` / `plugin_api/` 分层；`engine.py` 只做组合。
+- 冻结安全加固：状态保存失败回滚、取消/解冻失败保留记录、未知 UID/共享 unit/空树 fail-closed。
+- 配置事务化：dry-run 与名单更新先验证再提交；扫描间隔/URL/规则数量边界校验。
+- 插件平台：注册缓冲、能力最小化、PID 正数校验、单 source 5000 条上限。
+- 事件：webhook 改为有界队列 + 单 worker。
+- CLI：主命令改为 `focused`（`focusedd` 兼容别名）；安装脚本适配独立项目布局。
+- 后端测试 405 项（594 subtests）。
+
+[0.2.0]: https://github.com/CHARARA97/Focused/releases/tag/v0.2.0
+
 ## [0.1.0] - 2026-10-04
 
 首个版本。

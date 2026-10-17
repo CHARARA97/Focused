@@ -91,6 +91,25 @@ class DashboardScriptTests(unittest.TestCase):
             )
 
 
+class DashboardTokenTests(unittest.TestCase):
+    def test_the_api_helper_uses_a_per_tab_token(self):
+        script = DASHBOARD_HTML.split("<script>", 1)[1]
+        self.assertIn("sessionStorage", script)
+        self.assertIn("X-Focused-Token", script)
+        self.assertIn("focused-token", script)
+
+
+class DashboardHealthTests(unittest.TestCase):
+    def test_the_health_banner_reads_status_health(self):
+        html = DASHBOARD_HTML
+        script = html.split("<script>", 1)[1]
+        self.assertIn('id="healthBanner"', html)
+        self.assertIn("function renderHealth", script)
+        self.assertIn("state.health", script)
+        self.assertIn("scan_failures", script)
+        self.assertIn("recovery_failures", script)
+
+
 class DashboardConsistencyTests(unittest.TestCase):
     def setUp(self):
         self.html = DASHBOARD_HTML

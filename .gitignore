@@ -1,58 +1,24 @@
-# Build output
-.build/
-bin/
-obj/
-*.user
-
-# Local machine configuration
-plugin/.env.props
-.env
-
-# Vendored / downloaded artifacts (re-obtainable via scripts/install-bepinex.sh)
+# Build / packaging
 dist/
-third_party/
+build/
+release-assets/
+*.egg-info/
+.venv/
+venv/
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# Editors
-.vs/
+# Local runtime
+.env
+*.log
+
+# Editor / OS
 .vscode/
 .idea/
-
-# Local stage backups: they contain THIS machine's real configs
-# (~/.config/chillfocus/config.json, the game's com.chillfocused.*.cfg).
-# Publishing them would leak the owner's blacklist and protect list.
-.backup/
-.tmp/
-
-# dotnet/pnpm scratch
-packages/
-*.nupkg
-
-# Python packaging output
-*.egg-info/
-.venv/
-build/
-
-# Split-repository build output
-*.pyc
-__pycache__/
-*.egg-info/
-.venv/
-build/
-dist/
-
-# AUR build leftovers: only PKGBUILD, .SRCINFO and the .install file belong in a
-# package repository, and the .SRCINFO that matters lives in the AUR clone.
-packaging/aur/**/src/
-packaging/aur/**/pkg/
-packaging/aur/**/*.tar.gz
-packaging/aur/**/*.pkg.tar.*
-packaging/aur/**/.SRCINFO
-
-# Source archives made for AUR builds: both where makepkg looks and wherever the
-# maintainer happened to create them.
-*.tar.gz
-*.pkg.tar.*
+.DS_Store

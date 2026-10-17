@@ -1,26 +1,27 @@
-"""The wire contract the game plugin depends on.
+"""The wire contract between Focused and the game plugin.
 
-The plugin is C# and lives in its own repository, so this can no longer read its
-source.  What it *can* do is hold the plugin's field list to a checked-in fixture
-and assert that the payload still carries every field, still flat -- Unity's
-JsonUtility binds public fields and primitive arrays only, so a nested object
-arrives as null with no error anywhere.  That bug once shipped as a checkbox that
-was stuck on for a whole release.
+The plugin is C# and cannot be exercised from here, but the *shape* it depends on
+can: its DTO field names are parsed out of the source and checked against the
+payload Focused actually serves.  Drift here is the expensive kind -- Unity's
+JsonUtility does not complain about a field it cannot find, it leaves it at its
+default, which once shipped as a checkbox that was stuck on.
 """
 
-import json
 import os
+import re
 import socket
 import tempfile
 import unittest
-import urllib.request
 
 from focused.config import Config
 from focused.engine import FocusedEngine
 from focused.server import API_PREFIX, FocusedServer
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-FIXTURE = os.path.join(HERE, "fixtures", "plugin-dto-fields.json")
+WORKSPACE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DTO_PATH = os.environ.get(
+    "CHILLFOCUS_DTO_PATH",
+    os.path.join(WORKSPACE, "chillfocus", "ChillFocused", "Core", "FocusedProtocol.cs"),
+)
 
 
 def free_port() -> int:
@@ -29,23 +30,31 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def plugin_fields(section: str):
-    with open(FIXTURE, encoding="utf-8") as handle:
-        return json.load(handle)[section]
-
-
-def post(port, path, body, method="POST"):
-    request = urllib.request.Request(
-        "http://127.0.0.1:%d%s%s" % (port, API_PREFIX, path),
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method=method,
+def dto_fields(class_name: str):
+    """Field names of one ``[Serializable]`` class in the plugin's DTO file."""
+    with open(DTO_PATH, "r", encoding="utf-8") as handle:
+        source = handle.read()
+    match = re.search(
+        r"class\s+%s\s*\{(?P<body>.*?)\n    \}" % re.escape(class_name),
+        source,
+        re.S,
     )
-    with urllib.request.urlopen(request, timeout=5) as response:
-        return json.loads(response.read().decode("utf-8"))
+    if match is None:
+        raise AssertionError("class %s not found in %s" % (class_name, DTO_PATH))
+    fields = []
+    for line in match.group("body").splitlines():
+        line = line.strip()
+        if not line or line.startswith("//") or line.startswith("///") or line.startswith("["):
+            continue
+        field = re.match(r"public\s+[\w\[\]<>\.]+\s+(\w+)\s*;", line)
+        if field:
+            fields.append(field.group(1))
+    return fields
 
 
 class PluginPayloadContractTests(unittest.TestCase):
+    """Every field the plugin reads must exist in the payload it is reading."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -58,11 +67,16 @@ class PluginPayloadContractTests(unittest.TestCase):
             }
         )
         self.engine = FocusedEngine(config, logger=None, self_pid=4242)
-        self.server = FocusedServer(self.engine, host="127.0.0.1", port=config.http.port, token="")
+        self.server = FocusedServer(
+            self.engine, host="127.0.0.1", port=config.http.port, token=""
+        )
         self.port = self.server.start()
         self.addCleanup(self.server.stop)
 
     def payload(self, path="/focus"):
+        import json
+        import urllib.request
+
         with urllib.request.urlopen(
             "http://127.0.0.1:%d%s%s" % (self.port, API_PREFIX, path), timeout=5
         ) as response:
@@ -70,56 +84,83 @@ class PluginPayloadContractTests(unittest.TestCase):
 
     def test_the_focus_payload_carries_every_field_the_plugin_binds(self):
         payload = self.payload()
-        needed = plugin_fields("focus")
+        needed = dto_fields("FocusStateResponse")
 
-        self.assertTrue(needed, "the fixture is empty; did it get truncated?")
+        self.assertTrue(needed, "the DTO parse found no fields; did the file move?")
         missing = [field for field in needed if field not in payload]
-        self.assertEqual([], missing, "fields the plugin needs are missing from /focus: %s" % missing)
+        self.assertEqual([], missing, "plugin fields missing from /focus: %s" % missing)
 
     def test_the_process_payload_carries_every_field_the_picker_binds(self):
         payload = self.payload("/processes")
-        needed = plugin_fields("processes")
+        needed = dto_fields("ProcessListResponse")
 
         missing = [field for field in needed if field not in payload]
-        self.assertEqual(
-            [], missing, "fields the plugin's process picker needs are missing: %s" % missing
-        )
+        self.assertEqual([], missing, "picker fields missing from /processes: %s" % missing)
 
     def test_the_focus_payload_stays_flat(self):
+        # JsonUtility binds scalars and primitive arrays; a nested object would
+        # arrive null, which is exactly the bug this test exists to prevent.
         payload = self.payload()
 
-        nested = [key for key, value in payload.items() if isinstance(value, dict)]
-        self.assertEqual([], nested, "nested objects cannot be read by the plugin: %s" % nested)
+        nested = [
+            key
+            for key, value in payload.items()
+            if isinstance(value, dict)
+        ]
+        self.assertEqual([], nested, "nested objects cannot be read by the plugin")
 
     def test_the_rule_payload_the_plugin_sends_is_accepted(self):
-        # Field for field what the plugin's FocusSettings.ToRulePayload() produces.
-        status = post(
-            self.port,
-            "/focus/rules",
+        # Field-for-field what FocusSettings.ToRulePayload() produces.
+        status = self._put_rules(
             {
                 "names": ["firefox"],
                 "cmdline_substrings": ["--distract"],
                 "pids": [],
                 "protect_names": ["my-shell"],
                 "protect_cmdline_substrings": [],
-            },
-            method="PUT",
+            }
         )
 
         self.assertTrue(status["ok"])
         self.assertIn("firefox", status["applied"]["names"])
 
     def test_the_session_heartbeat_the_plugin_sends_is_accepted(self):
-        payload = post(
-            self.port,
-            "/focus/state",
-            {"active": True, "dry_run": False, "source": "game-timer", "ttl_seconds": 30},
+        payload = self._post_state(
+            {"active": True, "dry_run": False, "source": "game-timer", "ttl_seconds": 30}
         )
 
         self.assertTrue(payload["ok"])
-        focus = self.payload()
+        focus = self.payload("/focus")
         self.assertTrue(focus["delegated_active"])
         self.assertEqual("game-timer", focus["delegated_source"])
+
+    # -- helpers -----------------------------------------------------------
+
+    def _put_rules(self, body):
+        import json
+        import urllib.request
+
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d%s/focus/rules" % (self.port, API_PREFIX),
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _post_state(self, body):
+        import json
+        import urllib.request
+
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d%s/focus/state" % (self.port, API_PREFIX),
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
 
 
 if __name__ == "__main__":

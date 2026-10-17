@@ -2,7 +2,7 @@
 
 
 > **状态说明（合并后）**：本文档写作时的宿主侧执行者是 `chillfocusd` 守护进程。
-> 它已经**并入 Focused 应用**（`focused/`，`~/.local/bin/focusedd`，端口 8766），
+> 它已经**并入 Focused 应用**（`focused/`，`~/.local/bin/focused`，端口 8766），
 > 那一层已经删除；下文的"守护进程"就是今天的 **Focused**。
 > 当前架构见 [README](../README.md)，应用细节见 [focused.md](focused.md)。
 > 本文先如实列出**当前**两个面板显示的全部内容，再诊断问题，最后给出重构方案。

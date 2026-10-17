@@ -5,8 +5,9 @@ should die.  It is intentionally pure -- no I/O, no clock, no globals -- so the
 entire safety surface can be exhaustively unit tested.
 
 Evaluation is **fail-closed**: protective rules are checked before blacklist
-rules, and the first match wins.  A user who writes ``names = ["*"]`` by mistake
-gets "nothing is ever killed", not "the machine is killed".
+rules, and the first match wins.  A blacklist made only of glob syntax (``*``)
+is rejected at the configuration/API boundary; it would otherwise match every
+process that is not on the protect list.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from typing import Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from .matching import matcher_for
 from .procfs import COMM_MAX_LEN, ProcessInfo
 
 ACTION_PROTECT = "protect"
@@ -45,9 +47,35 @@ def is_catch_all_pattern(pattern: str) -> bool:
     """True for patterns made only of glob syntax (``*``, ``*?``, ``**`` ...).
 
     Such a pattern matches every process on the system; accepting it as a
-    blacklist rule would be catastrophic, so config validation rejects it.
+    blacklist rule would be catastrophic, so config/API validation rejects it.
     """
     return bool(pattern) and all(ch in _GLOB_CHARS for ch in pattern)
+
+
+@dataclass(frozen=True)
+class RuleProblem:
+    """One reason a rule set must not be accepted."""
+
+    code: str
+    detail: str
+    pattern: str = ""
+
+    def __str__(self) -> str:
+        suffix = " (%s)" % self.pattern if self.pattern else ""
+        return "%s: %s%s" % (self.code, self.detail, suffix)
+
+
+class RuleRejected(ValueError):
+    """Raised when a rule set would be unsafe to apply.
+
+    The API boundary translates this to ``400``; the configuration loader turns
+    it into ``FocusedConfigError``.  Keeping it a value-based exception means
+    callers can list every problem instead of fixing them one at a time.
+    """
+
+    def __init__(self, problems: Sequence[RuleProblem]) -> None:
+        self.problems = tuple(problems)
+        super().__init__("; ".join(str(problem) for problem in self.problems))
 
 
 @dataclass(frozen=True)
@@ -116,6 +144,34 @@ class RuleSet:
     @property
     def is_empty(self) -> bool:
         return not (self.names or self.cmdline_substrings or self.pids)
+
+    def problems(self) -> Tuple[RuleProblem, ...]:
+        """Unsafe patterns in this rule set, in a stable order.
+
+        This is deliberately a value-returning method rather than a raise: the
+        config loader, the HTTP API and the plugin registry all need to show the
+        same list of problems, and tests can assert on it without catching.
+        """
+        found: List[RuleProblem] = []
+        for pattern in sorted(self.names):
+            if is_catch_all_pattern(pattern):
+                found.append(
+                    RuleProblem(
+                        "rule.catch-all",
+                        "a blacklist pattern made only of glob syntax matches every process",
+                        pattern,
+                    )
+                )
+        for substring in self.cmdline_substrings:
+            if len(substring) < 2:
+                found.append(
+                    RuleProblem(
+                        "rule.cmdline-short",
+                        "a one-character cmdline substring is too broad; use at least two characters",
+                        substring,
+                    )
+                )
+        return tuple(found)
 
     def shadowed_names(self) -> Tuple[str, ...]:
         """Blacklist names that a protect rule will always win over.
@@ -212,13 +268,7 @@ def protect_reason(proc: ProcessInfo, rules: RuleSet) -> Optional[str]:
     this answers "would the user's protect list shield this?", which is what the
     settings UI needs to tell the user why an entry cannot be blocked.
     """
-    for pattern in sorted(rules.protect_names):
-        if name_matches(pattern, proc):
-            return "protect.name:" + pattern
-    for substring in rules.protect_cmdline_substrings:
-        if cmdline_matches(substring, proc):
-            return "protect.cmdline:" + substring
-    return None
+    return matcher_for(rules).protect_reason(proc)
 
 
 def evaluate(proc: ProcessInfo, rules: RuleSet, ctx: EvalContext) -> Decision:
@@ -246,18 +296,12 @@ def evaluate(proc: ProcessInfo, rules: RuleSet, ctx: EvalContext) -> Decision:
             ACTION_PROTECT, "hard:foreign-uid", "process belongs to another user"
         )
 
-    # --- user/default protect rules ----------------------------------------
-    for pattern in sorted(rules.protect_names):
-        if name_matches(pattern, proc):
-            return Decision(
-                ACTION_PROTECT, "protect.name:" + pattern, "matched protect list"
-            )
+    matcher = matcher_for(rules)
 
-    for substring in rules.protect_cmdline_substrings:
-        if cmdline_matches(substring, proc):
-            return Decision(
-                ACTION_PROTECT, "protect.cmdline:" + substring, "matched protect list"
-            )
+    # --- user/default protect rules ----------------------------------------
+    protected = matcher.protect_reason(proc)
+    if protected is not None:
+        return Decision(ACTION_PROTECT, protected, "matched protect list")
 
     if (
         ctx.protect_own_process_group
@@ -272,25 +316,29 @@ def evaluate(proc: ProcessInfo, rules: RuleSet, ctx: EvalContext) -> Decision:
         )
 
     # --- blacklist ---------------------------------------------------------
-    for pattern in sorted(rules.names):
-        if name_matches(pattern, proc):
-            return Decision(
-                ACTION_MATCH, "blacklist.name:" + pattern, "matched blacklist name"
-            )
+    name = matcher.blacklist_name(proc)
+    if name is not None:
+        return Decision(
+            ACTION_MATCH, "blacklist.name:" + name, "matched blacklist name"
+        )
 
-    for substring in rules.cmdline_substrings:
-        if cmdline_matches(substring, proc):
-            return Decision(
-                ACTION_MATCH,
-                "blacklist.cmdline:" + substring,
-                "matched blacklist cmdline substring",
-            )
+    substring = matcher.blacklist_cmdline(proc)
+    if substring is not None:
+        return Decision(
+            ACTION_MATCH,
+            "blacklist.cmdline:" + substring,
+            "matched blacklist cmdline substring",
+        )
 
     if proc.pid in rules.pids:
         guard = rules.pid_guards.get(proc.pid)
         rule = "blacklist.pid:" + str(proc.pid)
         if guard is None:
-            return Decision(ACTION_MATCH, rule, "matched blacklist pid (no reuse guard)")
+            # A PID without a start-time guard cannot be distinguished from a
+            # reused PID.  Refuse rather than risk stopping a stranger.
+            return Decision(
+                ACTION_SKIP, rule, "pid rule has no reuse guard: refusing to freeze"
+            )
         if proc.starttime is None:
             # Fail closed: without a start time the guard cannot be verified, so
             # we cannot prove this PID is still the process the rule meant.

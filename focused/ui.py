@@ -80,6 +80,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         max-height:320px; overflow:auto; font-size:12px; white-space:pre-wrap; }
   .banner { padding:8px 12px; border-radius:8px; border:1px solid var(--warn); color:var(--warn);
             margin-bottom:12px; }
+  .banner.bad { border-color:var(--danger); color:var(--danger); }
   .modes { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
   .modes button { padding:7px 12px; border-radius:8px; border:1px solid var(--border);
                   background:transparent; color:inherit; cursor:pointer; font:inherit; }
@@ -120,6 +121,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <section id="tab-overview" class="active">
     <div class="banner" id="dryBanner" style="display:none">当前为「只记录，不冻结」：命中名单的进程不会被挂起。</div>
+    <div class="banner bad" id="healthBanner" style="display:none"></div>
     <div class="card">
       <h2>专注会话</h2>
       <div class="clock" id="clock">未生效 · 未开始专注</div>
@@ -337,13 +339,27 @@ let eventSeq = 0;
 const $ = (id) => document.getElementById(id);
 const show = (id, text) => { const el = $(id); if (el) el.textContent = text; };
 
-async function api(path, method = 'GET', body) {
+function dashboardToken() {
+  return sessionStorage.getItem('focused-token') || '';
+}
+
+async function api(path, method = 'GET', body, allowPrompt = true) {
   const options = { method, headers: {} };
+  const token = dashboardToken();
+  if (token) options.headers['X-Focused-Token'] = token;
   if (body !== undefined) {
     options.headers['Content-Type'] = 'application/json';
     options.body = JSON.stringify(body);
   }
   const response = await fetch('/api/v1' + path, options);
+  if (response.status === 401 && allowPrompt) {
+    sessionStorage.removeItem('focused-token');
+    const entered = window.prompt('请输入 Focused 访问令牌（仅保存在本标签页）', '');
+    if (entered) {
+      sessionStorage.setItem('focused-token', entered.trim());
+      return api(path, method, body, false);
+    }
+  }
   const payload = await response.json().catch(() => ({ ok: false, error: 'bad json' }));
   if (!response.ok && payload.error) throw new Error(payload.error);
   return payload;
@@ -898,6 +914,29 @@ async function saveSettings() {
   await refreshAll();
 }
 
+function renderHealth() {
+  const health = state.health || {};
+  const banner = $('healthBanner');
+  if (!banner) return;
+  const problems = [];
+  if (health.degraded) {
+    problems.push('扫描连续失败 ' + health.scan_failures + ' 次，最后错误：' +
+      (health.last_scan_error || '未知'));
+  }
+  if (health.recovery_failures && health.recovery_failures.length) {
+    problems.push('启动恢复未完成：' + health.recovery_failures.join(', '));
+  }
+  if (health.freeze_enabled === false) problems.push('冻结已关闭');
+  const scan = state.scan_ms || {};
+  if (scan.p95 && scan.p95 > 50) problems.push('扫描 p95 为 ' + scan.p95 + ' ms');
+  if (!problems.length) {
+    banner.style.display = 'none';
+    return;
+  }
+  banner.textContent = '健康检查：' + problems.join(' · ');
+  banner.style.display = 'block';
+}
+
 function renderOverview() {
   const dot = $('dot');
   const paused = state.pause_until > Date.now() / 1000;
@@ -907,6 +946,7 @@ function renderOverview() {
     ? '· 开始于 ' + new Date(state.session_since * 1000).toLocaleTimeString() : '');
   show('frozenSummary', state.frozen_count ? '· 已冻结 ' + state.frozen_count + ' 个' : '· 已冻结 0 个');
   $('dryBanner').style.display = state.dry_run ? 'block' : 'none';
+  renderHealth();
 
   const who = [];
   if (state.manual_session) who.push('Focused 应用');

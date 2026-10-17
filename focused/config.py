@@ -10,6 +10,7 @@ by the engine's own tests.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -229,8 +230,10 @@ class Config:
                 "processes and must not be exposed to the network."
                 % (sorted(LOOPBACK_HOSTS), self.http.host)
             )
-        if self.scan_interval < 0.1:
-            raise FocusedConfigError("scan_interval must be >= 0.1")
+        if not math.isfinite(self.scan_interval) or not 0.1 <= self.scan_interval <= 3600.0:
+            raise FocusedConfigError(
+                "scan_interval must be a finite number in [0.1, 3600]"
+            )
         if self.freeze.max_per_scan < 1:
             raise FocusedConfigError("freeze.max_per_scan must be >= 1")
         if self.freeze.confirm_timeout_ms < 100:
@@ -242,6 +245,11 @@ class Config:
             )
         if self.session.default_minutes < 1:
             raise FocusedConfigError("session.default_minutes must be >= 1")
+        problems = self.rules.problems()
+        if problems:
+            raise FocusedConfigError(
+                "unsafe blacklist: " + "; ".join(str(problem) for problem in problems)
+            )
 
     # -- saving ------------------------------------------------------------
 
@@ -295,6 +303,9 @@ class Config:
         with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(self.to_dict(), handle, indent=2, ensure_ascii=False, sort_keys=True)
             handle.write("\n")
+        # The file contains http.token and plugin-facing settings; keep it private
+        # even if an older version wrote it 0644.
+        os.chmod(tmp, 0o600)
         os.replace(tmp, target)
         self.path = target
         return target

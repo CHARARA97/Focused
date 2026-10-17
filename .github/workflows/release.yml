@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build/test tools
+        run: python -m pip install --upgrade pip build pytest
+
+      - name: Verify tag matches package version
+        run: |
+          version="$(python -c 'from focused import __version__; print(__version__)')"
+          test "$GITHUB_REF_NAME" = "v$version" || {
+            echo "tag $GITHUB_REF_NAME does not match package version $version" >&2
+            exit 1
+          }
+
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Verify wheel CLI
+        run: |
+          python -m venv /tmp/focused-wheel-venv
+          /tmp/focused-wheel-venv/bin/pip install dist/*.whl
+          /tmp/focused-wheel-venv/bin/focused --version
+          /tmp/focused-wheel-venv/bin/focused --help >/dev/null
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release-assets
+          cp dist/*.whl dist/*.tar.gz release-assets/
+          cp scripts/install-focused.sh release-assets/install.sh
+          cp scripts/doctor-focused.sh release-assets/doctor-focused.sh
+          cp scripts/launch-focused.sh release-assets/launch-focused.sh
+          (cd release-assets && sha256sum * > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          chmod +x release-assets/*.sh
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --title "Focused ${GITHUB_REF_NAME#v}" \
+            --generate-notes
