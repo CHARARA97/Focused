@@ -100,15 +100,6 @@ def post_session(engine, path: str, body: Dict[str, Any]) -> Tuple[int, Dict[str
         return 200, {"ok": True, "pause_until": engine.pause(seconds)}
 
     if path == API_PREFIX + "/scan":
-        return 200, {"ok": True, "frozen": engine.scan_once()}
-
-    if path == API_PREFIX + "/thaw":
-        count = engine.thaw_all("api")
-        return 200, {
-            "ok": True,
-            "thawed": count,
-            "detail": "resumed %d target(s)" % count,
-            "error": "",
-        }
+        return 200, engine.scan_once().to_wire()
 
     return 404, {"ok": False, "error": "no such endpoint: %s" % path}

@@ -1,26 +1,3 @@
-"""Focused's engine: find the blacklisted applications and suspend them.
-
-This is the application the user asked for -- the one that owns "find it and
-freeze it".  ChillFocus (the game mod's daemon) can hand a session over to it;
-Focused can also run a session by itself, with no game involved at all.
-
-What it shares with ChillFocus, and why:
-
-* ``focused.core.*`` -- the low-level decision and signal code (reading /proc,
-  the cgroup rules, the freezer itself, the rule engine, the URL matcher).  Those
-  modules are covered by 160+ tests, and keeping a second copy of the
-  *dangerous* half (which process may be suspended, and how to resume it) is how
-  a thaw gets lost.  Focused owns the application: its own config, its own
-  session clock, its own protocol, its own state file.
-
-Rules that keep it honest (mirrors ``docs/freeze-mode.md``):
-
-* freeze only, never terminate;
-* a session end, a hand-over, a crash or ``--thaw-all`` always resumes
-  everything -- the state file is the source of truth;
-* ``dry_run`` reports what it would do and touches nothing.
-"""
-
 from __future__ import annotations
 
 import collections
@@ -29,22 +6,34 @@ import threading
 import time
 from typing import Any, Deque, Dict, List, Optional
 
-from .core import cgroupfs
-from .core.freezer import Freezer, Frozen
+from .core.killer import Killer, OsSignalSender
 from .core.procfs import ProcFS
 from .core.rules import RuleSet
 from .app.plugin_gateway import PluginGateway
+from .app.plugin_view import PluginView
+from .app.process_view import ProcessView
+from .domain.identity import Identity
 from .app.rules import RuleSourceService
 from .app.config import ConfigService
+from .app.config_view import ConfigView
 from .app.events import EventBus
-from .app.freeze import FreezeService
+from .app.enforcer import Enforcer
+from .app.reporting import Reporting
+from .app.runtime_info import RuntimeInfo
+from .app.timing import Timeline
 from .app.plugin_runtime import PluginRuntime
-from .app.scan import ScanRequester, ScanService
+from .app.scan import ScanRequester, ScanResult, ScanService
 from .app.status import StatusService
 from .app.session import SessionService
 from .app.state import StateService
 from .diagnostics import log_event
-from .domain.health import Health
+from .domain.reasons import ActionEvent, EventKind
+from .app.history import DenyBook, EpisodeBook
+from .app.health import Health
+
+
+EPISODE_WINDOW = 60.0
+
 
 from . import __version__
 from .config import Config
@@ -57,19 +46,17 @@ def _now() -> float:
 
 
 class FocusedEngine:
-    """The standalone freeze engine."""
 
     def __init__(
         self,
         config: Config,
         procfs: Optional[ProcFS] = None,
-        freezer: Optional[Freezer] = None,
+        killer: Optional[Killer] = None,
         logger=None,
         uid: Optional[int] = None,
         self_pid: Optional[int] = None,
-        self_cgroup: Optional[str] = None,
-        unified_cgroup2: Optional[bool] = None,
         clock=_now,
+        signal_sender: Any = None,
     ) -> None:
         self.config = config
         self.procfs = procfs or ProcFS()
@@ -78,49 +65,46 @@ class FocusedEngine:
 
         self._uid = os.getuid() if uid is None else uid
         self._self_pid = os.getpid() if self_pid is None else self_pid
-        self._self_cgroup = (
-            cgroupfs.read_self_cgroup() if self_cgroup is None else self_cgroup
-        )
-        self._unified_cgroup2 = (
-            cgroupfs.is_unified_cgroup2() if unified_cgroup2 is None else unified_cgroup2
-        )
-
         self._lock = threading.RLock()
-        self._dry_run = bool(config.dry_run)
-        self._freeze_enabled = bool(config.freeze.enabled)
 
-        self._freezer = freezer or Freezer(
-            procfs=self.procfs,
-            state_path=config.freeze.state_path,
+        self._killer = killer or Killer(
+            sender=signal_sender or OsSignalSender(),
+            reader=self.procfs,
             logger=logger,
-            confirm_timeout_ms=config.freeze.confirm_timeout_ms,
         )
-
-        # The registry is a JSON record in the data directory; plugins_path is a
-        # directory of Python modules.  Confusing the two writes a plugin list
-        # where modules are expected (and breaks both).
-        self._plugins = PluginRegistry(
-            getattr(config, "registry_path", "")
-            or os.path.join(os.path.dirname(config.freeze.state_path or "."), "plugins.json"),
-            logger=logger,
-            clock=clock,
-        )
-        self._recent: Deque[Dict[str, Any]] = collections.deque(maxlen=8)
-
+        self._history = EpisodeBook(window=EPISODE_WINDOW)
+        self._denies = DenyBook(window=EPISODE_WINDOW)
+        self._last_scan = ScanResult()
         self._stats: Dict[str, Any] = {
             "scans": 0,
             "matched": 0,
             "protected": 0,
-            "frozen": 0,
-            "thawed": 0,
-            "thaw_failed": 0,
-            "freeze_skipped": 0,
+            "killed": 0,
+            "would_kill": 0,
+            "denied": 0,
+            "kill_failed": 0,
             "sessions": 0,
         }
         self._health = Health(
             degraded_after=self.DEGRADED_AFTER,
-            freeze_enabled=self._freeze_enabled,
+            enforcement_enabled=bool(config.enforcement.enabled),
         )
+
+        self._reporting = Reporting(
+            audit_log=lambda: getattr(self, "audit", None),
+            emit=self.emit,
+            logger=logger,
+            health=self._health,
+            stats=self._stats,
+        )
+
+        self._plugins = PluginRegistry(
+            getattr(config, "registry_path", "")
+            or os.path.join(Config.data_dir(), "plugins.json"),
+            logger=logger,
+            clock=clock,
+        )
+
 
         # Application services.  They are deliberately thin: the engine still
         # owns the state, while the services own the semantics a plugin may use.
@@ -136,41 +120,25 @@ class FocusedEngine:
             lambda: self._clock(),
             session_config=lambda: self.config.session,
             stats=self._stats,
-            audit=self._audit,
+            audit=self._reporting.record,
             log=self._log,
         )
-        self._freeze_service = FreezeService(
-            procfs=self.procfs,
-            freezer=self._freezer,
-            rules=self._rule_sources,
+        self._enforcer = Enforcer(
+            killer=self._killer,
+            reporting=self._reporting,
             clock=lambda: self._clock(),
-            uid=self._uid,
-            self_pid=self._self_pid,
-            self_cgroup=self._self_cgroup,
-            unified_cgroup2=self._unified_cgroup2,
-            config=self.config,
-            health=self._health,
-            stats=self._stats,
-            recent=self._recent,
-            audit=self._audit,
-            log=self._log,
-            logger=self.logger,
+            history=self._history,
+            denies=self._denies,
         )
         self._scan_service = ScanService(
-            clock=lambda: self._clock(),
+            timeline=Timeline(wall=lambda: self._clock(), monotonic=time.monotonic),
             procfs=self.procfs,
-            freezer=self._freezer,
             rules=self._rule_sources,
             session=self._session_service,
-            freeze_service=self._freeze_service,
-            health=self._health,
+            enforcer=self._enforcer,
             config=self.config,
-            stats=self._stats,
-            audit=self._audit,
-            log=self._log,
-            logger=self.logger,
-            dry_run=lambda: self._dry_run,
-            freeze_enabled=lambda: self._freeze_enabled,
+            reporting=self._reporting,
+            identity=Identity(pid=self._self_pid, ppid=os.getppid(), uid=self._uid),
         )
         self._scan_requester = ScanRequester(self.scan_once, self._clock)
         self._plugin_gateway = PluginGateway(
@@ -200,41 +168,41 @@ class FocusedEngine:
             clear_source=self.clear_source,
             set_state=lambda active, source: self.set_state(active, source=source),
         )
-        self._status_service = StatusService(
-            clock=lambda: self._clock(),
-            rules=self._rule_sources,
-            session=self._session_service,
-            freeze=self._freeze_service,
-            scan=self._scan_service,
+        self._config_view = ConfigView(
+            self.config, self._rule_sources, self._session_service
+        )
+        self._plugin_view = PluginView(
             registry=self._plugins,
-            health=self._health,
-            stats=self._stats,
-            recent=self._recent,
-            config=self.config,
+            session=self._session_service,
+            clock=lambda: self._clock(),
+        )
+        self._process_view = ProcessView(
             procfs=self.procfs,
+            rules=self._rule_sources,
             uid=self._uid,
             self_pid=self._self_pid,
-            self_cgroup=self._self_cgroup,
-            unified_cgroup2=self._unified_cgroup2,
-            dry_run=lambda: self._dry_run,
-            freeze_enabled=lambda: self._freeze_enabled,
-            event_seq=lambda: self._event_bus.seq,
-            addons=self.addons,
-            version=__version__,
+        )
+        self._status_service = StatusService(
+            rules=self._rule_sources,
+            session=self._session_service,
+            enforcer=self._enforcer,
+            scan=self._scan_service,
+            health=self._health,
+            stats=self._stats,
+            config=self.config,
+            runtime=RuntimeInfo(
+                pid=self._self_pid,
+                version=__version__,
+                addons=self.addons,
+                event_seq=lambda: self._event_bus.seq,
+            ),
+            processes=self._process_view,
+            plugins=self._plugin_view,
         )
         self._config_service = ConfigService(
             self.config,
             self._rule_sources,
-            dry_run=lambda: self._dry_run,
-            set_dry_run=self.set_dry_run,
-            set_freeze_enabled=self._set_freeze_enabled,
-            thaw_all=self.thaw_all,
-            apply_rules=self.apply_rules,
-            sources=self.sources,
-            set_url_patterns=self.set_url_patterns,
-            config_dict=self.config_dict,
-            emit=self._emit,
-            set_http_token=self._set_http_token,
+            self,
         )
 
     # -- logging -----------------------------------------------------------
@@ -311,7 +279,7 @@ class FocusedEngine:
             changed = self._session_service.withdraw(source)
         now_active = self.active()
         if changed:
-            self._audit(
+            self._reporting.record(
                 {
                     "kind": "state",
                     "active": bool(active),
@@ -378,16 +346,6 @@ class FocusedEngine:
         """Let the user off for a while without ending the session."""
         return self._session_service.pause(seconds)
 
-    def set_dry_run(self, value: bool) -> bool:
-        with self._lock:
-            self._dry_run = bool(value)
-            return self._dry_run
-
-    @property
-    def dry_run(self) -> bool:
-        with self._lock:
-            return self._dry_run
-
     # -- rules -------------------------------------------------------------
 
     def rules(self) -> RuleSet:
@@ -396,10 +354,9 @@ class FocusedEngine:
     def _rules_changed(self, source, entry, merged: RuleSet) -> None:
         """The rule service changed the merged set; log, audit and thaw stale."""
         if entry is None:
-            self._thaw_stale()
             return
         count = len(entry.get("names") or ()) + len(entry.get("cmdline_substrings") or ()) + len(entry.get("pids") or ())
-        self._audit(
+        self._reporting.record(
             {
                 "kind": "rules",
                 "source": source,
@@ -421,7 +378,6 @@ class FocusedEngine:
         )
         if source != "config":
             self._plugins.note_rules(source, count)
-        self._thaw_stale()
 
     def apply_rules(self, payload: Dict[str, Any], source: str = "builtin") -> RuleSet:
         """Compatibility delegate: the rule service owns validation and state."""
@@ -439,34 +395,22 @@ class FocusedEngine:
     def url_patterns(self) -> List[str]:
         return self._rule_sources.url_patterns()
 
-    # -- freeze/thaw (delegated) ------------------------------------------
+    # -- enforcement (delegated) -------------------------------------------
 
-    def frozen(self) -> List[Frozen]:
-        return self._freeze_service.frozen()
-
-    def thaw_all(self, reason: str = "manual") -> int:
-        return self._freeze_service.thaw_all(reason)
-
-    def recover_frozen(self) -> int:
-        return self._freeze_service.recover_frozen()
-
-    def close(self) -> int:
-        return self._freeze_service.close()
-
-    def _thaw_stale(self) -> int:
-        return self._freeze_service.thaw_stale()
-
-    def _freezable_pids(self, pids) -> List[int]:
-        return self._freeze_service.freezable_pids(pids)
+    def killed_total(self) -> int:
+        return int(self._stats.get("killed") or 0)
 
     # -- the scan (delegated) ---------------------------------------------
 
     #: How many consecutive failed scans before the status says "degraded".
     DEGRADED_AFTER = 3
 
-    def scan_once(self) -> int:
-        """Run exactly one scan.  Returns how many targets were suspended."""
-        return self._scan_service.scan_once()
+    def scan_once(self):
+        self._last_scan = self._scan_service.scan_once()
+        return self._last_scan
+
+    def scan_report(self) -> Dict[str, Any]:
+        return self._last_scan.to_wire()
 
     def scan_ms(self) -> Dict[str, float]:
         return self._scan_service.scan_ms()
@@ -479,7 +423,7 @@ class FocusedEngine:
     def _record_event(self, kind: str, **fields: Any) -> Dict[str, Any]:
         return self._event_bus.record(kind, **fields)
 
-    def _emit(self, kind: str, **fields: Any) -> Dict[str, Any]:
+    def emit(self, kind: str, **fields: Any) -> Dict[str, Any]:
         return self._event_bus.emit(kind, **fields)
 
     def events_since(self, since: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
@@ -501,16 +445,11 @@ class FocusedEngine:
 
     def record_plugin_action(self, plugin_id: str, action: str, **fields: Any) -> None:
         """Audit one plugin-originated action (rules/scan/etc.)."""
-        self._audit({"kind": "plugin." + action, "source": plugin_id, **fields})
+        self._reporting.record({"kind": "plugin." + action, "source": plugin_id, **fields})
 
     def health(self) -> Dict[str, Any]:
         return self._health.to_dict()
 
-    def frozen_count(self) -> int:
-        return self._freezer.frozen_count()
-
-    def frozen_names(self) -> List[str]:
-        return [entry.name for entry in self._freezer.entries()]
 
     def log_plugin(self, plugin_id: str, level: str, message: str) -> None:
         log_event(self.logger, level, "plugin.log", source=plugin_id, message=message)
@@ -535,11 +474,10 @@ class FocusedEngine:
 
     # -- configuration -----------------------------------------------------
 
-    def _set_freeze_enabled(self, enabled: bool) -> None:
-        self._freeze_enabled = bool(enabled)
-        self._health.freeze_enabled = self._freeze_enabled
+    def set_enforcement_enabled(self, enabled: bool) -> None:
+        self._health.enforcement_enabled = bool(enabled)
 
-    def _set_http_token(self, token: str) -> None:
+    def set_http_token(self, token: str) -> None:
         setter = getattr(self, "_server_token_setter", None)
         if setter is not None:
             setter(token)
@@ -548,7 +486,7 @@ class FocusedEngine:
         return self._config_service.update(patch)
 
     def config_dict(self) -> Dict[str, Any]:
-        return self._status_service.config_dict()
+        return self._config_view.to_dict()
 
     def visible_processes(self, limit: int = 400) -> List[Dict[str, Any]]:
         return self._status_service.visible_processes(limit)
@@ -558,23 +496,14 @@ class FocusedEngine:
 
     # -- introspection -----------------------------------------------------
 
-    def _audit(self, record: Dict[str, Any]) -> None:
-        logger = getattr(self, "audit", None)
-        if logger is not None:
-            logger.write(record)
-        # The same record is the event stream: one place to write, one place to
-        # notify, so a plugin cannot be told about something the audit never saw.
-        fields = {key: value for key, value in record.items() if key != "kind"}
-        self._emit(record.get("kind") or "event", **fields)
-
     def focus_state(self) -> Dict[str, Any]:
         return self._status_service.focus_state()
 
-    def frozen_list(self) -> List[Dict[str, Any]]:
-        return self._status_service.frozen_list()
+    def recent_list(self) -> List[Dict[str, Any]]:
+        return self._status_service.recent_list()
 
     def status(self) -> Dict[str, Any]:
         return self._status_service.status()
 
     def plugin_payloads(self) -> List[Dict[str, Any]]:
-        return self._status_service.plugin_payloads()
+        return self._plugin_view.payloads()

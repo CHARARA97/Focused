@@ -2,7 +2,7 @@
 
 import unittest
 
-from focused.domain.health import Health
+from focused.app.health import Health
 
 
 class HealthTests(unittest.TestCase):
@@ -27,19 +27,26 @@ class HealthTests(unittest.TestCase):
         self.assertFalse(health.degraded)
         self.assertEqual("", health.last_scan_error)
 
-    def test_disabled_freeze_is_a_problem(self):
-        health = Health(freeze_enabled=False)
+    def test_disabled_enforcement_is_a_problem(self):
+        health = Health(enforcement_enabled=False)
 
-        self.assertIn("freeze-disabled", health.problems)
+        self.assertIn("enforcement-disabled", health.problems)
 
-    def test_recovery_failures_are_unique(self):
+    def test_a_respawn_storm_is_reported_once_per_name(self):
         health = Health()
-        health.record_recovery_failure("firefox")
-        health.record_recovery_failure("firefox")
-        health.record_recovery_failure("steam")
+        health.note_respawn("firefox", 11, 10)
+        health.note_respawn("firefox", 12, 10)
+        health.note_respawn("steam", 11, 10)
 
-        self.assertEqual(("firefox", "steam"), health.recovery_failures)
-        self.assertIn("recovery-incomplete", health.problems)
+        self.assertEqual(("firefox", "steam"), health.respawn_storm)
+        self.assertIn("respawn-storm", health.problems)
+
+    def test_a_kill_failure_is_a_problem(self):
+        health = Health()
+        health.record_kill_failure("firefox")
+
+        self.assertEqual(1, health.kill_failures)
+        self.assertIn("kill-failures", health.problems)
 
     def test_to_dict_is_json_shaped(self):
         payload = Health(scan_failures=1, last_scan_error="boom").to_dict()

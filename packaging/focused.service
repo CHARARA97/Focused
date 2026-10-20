@@ -10,9 +10,6 @@ Type=simple
 # writes into ~/.local generates its own unit with that layout instead; this file is
 # what packaging/aur/*/PKGBUILD installs verbatim.
 ExecStart=/usr/bin/focused --config %h/.config/focused/config.json
-# Crash safety net: systemd runs this even when the process is killed outright, so
-# a suspended application cannot outlive the process that suspended it.
-ExecStopPost=/usr/bin/focused --config %h/.config/focused/config.json --thaw-all
 Restart=on-failure
 RestartSec=5
 # Focused only ever suspends processes of the same user; keep its own nice level so

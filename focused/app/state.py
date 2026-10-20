@@ -1,10 +1,3 @@
-"""Read-only state snapshots for a plugin.
-
-The snapshot is intentionally small: what is active, what is frozen, what the
-plugin itself claimed, and whether enforcement is healthy.  It never exposes an
-engine handle, tokens, or the ability to mutate anything.
-"""
-
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -25,13 +18,14 @@ class StateService:
             "active": self._engine.active(),
             "my_claim": claims.get(source),
             "claims": claims,
-            "frozen_count": self._engine.frozen_count(),
+            "killed_total": self._engine.killed_total(),
+            "scan": self._engine.scan_report(),
             "health": self._engine.health(),
             "scan_ms": self._engine.scan_ms(),
         }
 
-    def frozen(self) -> List[Dict[str, Any]]:
-        return self._engine.frozen_list()
+    def history(self) -> List[Dict[str, Any]]:
+        return self._engine.recent_list()
 
     def rules(self, source: str) -> Dict[str, Any]:
         return self._rules.list(source)

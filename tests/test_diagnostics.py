@@ -23,10 +23,10 @@ class LogEventTests(unittest.TestCase):
     def test_fields_are_sorted_and_empty_values_are_omitted(self):
         logger = _Logger()
 
-        log_event(logger, "warning", "freeze.refuse", pid=7, reason="shared-unit", rule=None)
+        log_event(logger, "warning", "enforce.deny", pid=7, reason="shared-unit", rule=None)
 
         self.assertEqual(
-            [("warning", "event=freeze.refuse pid=7 reason=shared-unit")],
+            [("warning", "event=enforce.deny pid=7 reason=shared-unit")],
             logger.lines,
         )
 

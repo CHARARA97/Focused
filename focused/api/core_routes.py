@@ -12,7 +12,6 @@ _SESSION_PATHS = {
     API_PREFIX + "/focus/session",
     API_PREFIX + "/focus/pause",
     API_PREFIX + "/scan",
-    API_PREFIX + "/thaw",
 }
 
 

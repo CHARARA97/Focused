@@ -21,6 +21,14 @@ def script_source() -> str:
     return DASHBOARD_HTML.split("<script>", 1)[1].split("</script>")[0]
 
 
+def text_prelude(source: str) -> str:
+    return "\n".join(
+        line
+        for line in source.splitlines()
+        if line.startswith("const TEXT = ") or line.startswith("const T = ")
+    )
+
+
 def extract_function(source: str, name: str) -> str:
     """Pull one function out of the page by brace matching."""
     start = source.index("function %s(" % name)
@@ -73,13 +81,15 @@ makeField('setDryRun', false, 'checkbox');
 const document = { activeElement: null, getElementById: (id) => fields[id] || null };
 function $(id) { return fields[id] || null; }
 function show() {}
-const config = { session: { default_minutes: 25, pomodoro_work_minutes: 25 }, dry_run: false };
+const config = { session: { default_minutes: 25, pomodoro_work_minutes: 25 } };
+%s
 %s
 %s
 const dirtyFields = new Set();
 %s
 console.log(JSON.stringify({ fields: fields, result: RESULT }));
 """ % (
+            text_prelude(self.source),
             helpers,
             "const SETTINGS_FIELDS = [];",
             body,
@@ -138,6 +148,34 @@ const RESULT = { after: fields['setDryRun'].checked };
 """)
 
         self.assertTrue(self.payload["fields"]["setDryRun"]["checked"])
+
+    def test_the_clock_counts_down_between_refreshes(self):
+        self.run_in_node("""
+fields['clock'] = { innerHTML: '', textContent: '' };
+fields['clockDetail'] = { textContent: '' };
+fields['extendBtn'] = { disabled: false };
+fields['skipBtn'] = { disabled: false };
+state = {
+  active: true,
+  manual_session: true,
+  session_state: { mode: 'countdown', until: 2000, started_at: 1600 },
+};
+const realNow = Date.now;
+Date.now = () => 1900 * 1000;
+%s
+renderSessionClock();
+const first = fields['clock'].innerHTML;
+Date.now = () => 1901 * 1000;
+renderSessionClock();
+const RESULT = { first: first, second: fields['clock'].innerHTML };
+Date.now = realNow;
+""" % "\n".join(
+            extract_function(self.source, name)
+            for name in ("formatClock", "renderSessionClock")
+        ))
+
+        self.assertIn("01:40", self.payload["result"]["first"])
+        self.assertIn("01:39", self.payload["result"]["second"])
 
     def test_the_header_labels_follow_the_configured_values(self):
         self.run_in_node("""

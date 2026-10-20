@@ -4,11 +4,10 @@ The API is the contract in ``docs/focused-protocol.md``:
 
 * ``PUT  /api/v1/focus/rules``   -- ChillFocus (or a script) hands the rules over
 * ``POST /api/v1/focus/state``   -- ...and says whether a session is running
-* ``GET  /api/v1/focus/frozen``  -- ...and reads back what Focused suspended
 * ``GET  /api/v1/focus``         -- the browser extension's view of the session
 
-Everything else is convenience: a manual session, a temporary pass, a thaw, and
-the dashboard.  All of it is loopback-only, and a token is optional (set
+Everything else is convenience: a manual session, a temporary pass, and the
+dashboard.  All of it is loopback-only, and a token is optional (set
 ``http.token`` and every request must carry ``X-Focused-Token``).
 """
 
@@ -60,6 +59,11 @@ class FocusedRequestHandler(BaseHTTPRequestHandler):
     def _authorised(self) -> bool:
         """The application token: what the UI and the built-in frontends use."""
         return self._auth().authorised()
+
+    def _plugin_id(self, path: str) -> str:
+        if not path.startswith(API_PREFIX + "/plugins/"):
+            return ""
+        return _plugin_route(path)[0]
 
     def _plugin_authorised(self, plugin_id: str) -> bool:
         """A plugin may act with its own token, or with the application token."""
@@ -156,8 +160,8 @@ class FocusedRequestHandler(BaseHTTPRequestHandler):
                 return
             body = self._read_json()
             engine = self._engine()
-            if path.startswith(API_PREFIX + "/plugins/") and path.endswith("/rules"):
-                plugin_id = path[len(API_PREFIX + "/plugins/") : -len("/rules")]
+            plugin_id = self._plugin_id(path)
+            if plugin_id:
                 if not self._plugin_authorised(plugin_id):
                     self._send_json(401, {"ok": False, "error": "missing or invalid token"})
                     return
@@ -216,9 +220,8 @@ class FocusedRequestHandler(BaseHTTPRequestHandler):
                     return
                 status, payload = post_plugin(engine, path, body)
                 self._send_json(status, payload)
-            elif path.startswith(API_PREFIX + "/plugins/"):
-                plugin_id, _tail = _plugin_route(path)
-                if not self._plugin_authorised(plugin_id):
+            elif self._plugin_id(path):
+                if not self._plugin_authorised(self._plugin_id(path)):
                     self._send_json(401, {"ok": False, "error": "missing or invalid token"})
                     return
                 status, payload = post_plugin(engine, path, body)

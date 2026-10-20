@@ -1,6 +1,8 @@
 # plugins — 插件持久化与加载
 
-- `registry.py` — `PluginRecord`、token、能力、`plugins.json`、`PluginRegistry`。
+- `registry.py` — `PluginRegistry`：注册、令牌、能力、状态迁移。
+- `records.py` — `PluginRecord` 与 slug；纯数据。
+- `store.py` — `plugins.json` 的读写：原子写、0600、容错。
 - `loader.py` — 进程内 Python 模块加载、`load_addons`、失败清理。
 - `__init__.py` — 兼容 re-export；`from focused.plugins import ...` 不变。
 

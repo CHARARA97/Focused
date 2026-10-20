@@ -15,7 +15,6 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from . import cgroupfs
 
 #: Linux stores task names in a 16-byte field: 15 visible characters plus NUL.
 #: Anything longer is silently truncated by the kernel, which is the single most
@@ -187,25 +186,6 @@ class ProcFS:
             return None
         return raw.decode("utf-8", "replace")
 
-    def cgroup(self, pid: int) -> Optional[str]:
-        """The cgroup path a process lives in, or None when it is unreadable.
-
-        Freeze mode needs this to decide whether a process may be suspended as a
-        whole unit or only as a process tree; see ``cgroupfs``.
-        """
-        return cgroupfs.parse_proc_cgroup(self._read_text(self._path(pid, "cgroup")) or "")
-
-    def cgroup_frozen(self, cgroup_path: str) -> Optional[bool]:
-        """Whether a cgroup currently reports ``frozen 1``; None if unreadable.
-
-        This is the only reliable confirmation: a cgroup-frozen task still shows
-        ``S`` in ``/proc/<pid>/status``.
-        """
-        text = self._read_text(cgroupfs.events_file(cgroup_path))
-        if text is None:
-            return None
-        return cgroupfs.is_frozen(text)
-
     def _read_uid(self, pid: int) -> Optional[int]:
         raw = self._read_bytes(self._path(pid, "status"))
         if raw is None:
@@ -298,3 +278,31 @@ class ProcFS:
             if info is not None:
                 out.append(info)
         return out
+
+    def supports_live_children(self) -> bool:
+        task_dir = os.path.join(self.root, "self", "task")
+        try:
+            tids = os.listdir(task_dir)
+        except OSError:
+            return False
+        return any(
+            os.path.exists(os.path.join(task_dir, tid, "children")) for tid in tids
+        )
+
+    def child_pids(self, pid: int) -> Tuple[int, ...]:
+        task_dir = self._path(pid, "task")
+        try:
+            tids = os.listdir(task_dir)
+        except OSError:
+            return ()
+        found = set()
+        for tid in tids:
+            text = self._read_text(os.path.join(task_dir, tid, "children"))
+            if not text:
+                continue
+            for token in text.split():
+                try:
+                    found.add(int(token))
+                except ValueError:
+                    continue
+        return tuple(sorted(found))

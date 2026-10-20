@@ -3,7 +3,7 @@
 import unittest
 
 from focused.app.session import SessionService
-from focused.domain.claims import ClaimBook
+from focused.app.claims import ClaimBook
 
 
 class ClaimBookTests(unittest.TestCase):

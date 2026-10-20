@@ -53,15 +53,19 @@ class EventBus:
         """Append one event to the ring buffer (no delivery)."""
         with self._lock:
             self._seq += 1
-            event = {
+            event: Dict[str, Any] = {
                 "seq": self._seq,
                 "ts": self._clock(),
                 "kind": kind,
-                "source": str(fields.get("source") or ""),
-                "name": str(fields.get("name") or ""),
-                "pid": int(fields.get("pid") or 0),
-                "detail": str(fields.get("detail") or fields.get("rule") or ""),
             }
+            for key, value in fields.items():
+                if key in ("seq", "ts", "kind"):
+                    continue
+                event[key] = value
+            event["source"] = str(fields.get("source") or "")
+            event["name"] = str(fields.get("name") or "")
+            event["pid"] = int(fields.get("pid") or 0)
+            event["detail"] = str(fields.get("detail") or fields.get("rule") or "")
             self._events.append(event)
         return event
 

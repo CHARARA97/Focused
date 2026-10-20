@@ -1,11 +1,9 @@
-"""Focused's own tests: configuration, the session engine, and the protocol.
+"""Engine-level tests: configuration, sessions, rules and PID guards.
 
-The engine is exercised with a real process (a copy of ``yes`` under a marker
-name, in its own session), the same trick the ChillFocus daemon tests use: a
-synthetic process may prove the decision, but only a real one proves the freeze.
+Nothing here signals a process; the end-to-end kill path lives in
+``test_lifecycle.py``, and the per-target decisions in ``test_enforcer.py``.
 """
 
-import json
 import os
 import shutil
 import signal
@@ -17,49 +15,6 @@ import unittest
 
 from focused.config import Config, FocusedConfigError
 from focused.engine import FocusedEngine
-
-
-def ticks(pid):
-    try:
-        with open("/proc/%d/stat" % pid, "r", encoding="utf-8") as handle:
-            rest = handle.read().rsplit(")", 1)[1].split()
-    except (OSError, IndexError):
-        return None
-    return int(rest[11]) + int(rest[12])
-
-
-def state(pid):
-    try:
-        with open("/proc/%d/stat" % pid, "r", encoding="utf-8") as handle:
-            return handle.read().rsplit(")", 1)[1].split()[0]
-    except (OSError, IndexError):
-        return None
-
-
-def starttime(pid):
-    try:
-        with open("/proc/%d/stat" % pid, "r", encoding="utf-8") as handle:
-            return int(handle.read().rsplit(")", 1)[1].split()[19])
-    except (OSError, IndexError, ValueError):
-        return None
-
-
-def wait_for_state(pid, wanted, timeout=3.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if state(pid) == wanted:
-            return True
-        time.sleep(0.02)
-    return False
-
-
-def wait_until_running(pid, timeout=3.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if state(pid) not in (None, "T"):
-            return True
-        time.sleep(0.02)
-    return False
 
 
 class Burner:
@@ -97,18 +52,16 @@ class EngineTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.state_path = os.path.join(self._tmp.name, "frozen.json")
         self.burner = Burner("cf-focused-live")
         self.addCleanup(self.burner.stop)
         time.sleep(0.3)
 
-    def engine(self, blacklist=None, dry_run=False, **kwargs):
+    def engine(self, blacklist=None, **kwargs):
         config = Config.from_dict(
             {
                 "audit_log": "",
-                "dry_run": dry_run,
                 "blacklist": {"names": blacklist if blacklist is not None else [self.burner.marker]},
-                "freeze": {"enabled": True, "state_path": self.state_path},
+                "enforcement": {"enabled": True, "mode": "audit"},
             }
         )
         return FocusedEngine(
@@ -116,43 +69,20 @@ class EngineTestCase(unittest.TestCase):
             logger=None,
             uid=os.getuid(),
             self_pid=999_001,
-            # A cgroup of our own, so the "do not freeze what contains us" rule
-            # does not mask the process-tree path under test.
-            self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
-            unified_cgroup2=True,
             **kwargs,
         )
 
 
 class SessionTests(EngineTestCase):
-    def test_a_session_suspends_a_real_target_and_resuming_ends_it(self):
-        engine = self.engine()
-
-        engine.start_session(1)
-        frozen = engine.scan_once()
-
-        self.assertEqual(1, frozen)
-        self.assertTrue(wait_for_state(self.burner.pid, "T"))
-        before = ticks(self.burner.pid)
-        time.sleep(0.5)
-        self.assertEqual(before, ticks(self.burner.pid), "a suspended process must not use CPU")
-        self.assertEqual(1, len(engine.frozen()))
-        self.assertTrue(os.path.exists(self.state_path))
-
-        engine.stop_session()
-        engine.scan_once()
-
-        self.assertTrue(wait_until_running(self.burner.pid))
-        self.assertEqual(0, len(engine.frozen()))
-        with open(self.state_path, "r", encoding="utf-8") as handle:
-            self.assertEqual([], json.load(handle)["frozen"])
 
     def test_nothing_happens_while_no_session_runs(self):
         engine = self.engine()
 
-        self.assertEqual(0, engine.scan_once())
-        self.assertNotEqual("T", state(self.burner.pid))
-        self.assertEqual(0, len(engine.frozen()))
+        result = engine.scan_once()
+
+        self.assertEqual("no-session", result.gate)
+        self.assertEqual(0, result.killed)
+        self.assertIsNone(self.burner.proc.poll())
 
     def test_a_delegated_state_is_enough(self):
         engine = self.engine()
@@ -160,25 +90,10 @@ class SessionTests(EngineTestCase):
         engine.set_state(True, source="chillfocus")
         engine.scan_once()
 
-        self.assertTrue(wait_for_state(self.burner.pid, "T"))
+        self.assertTrue(engine.active())
         self.assertTrue(engine.focus_state()["delegated"])
         self.assertFalse(engine.focus_state()["manual_session"])
 
-    def test_a_temporary_pass_resumes_and_holds_off(self):
-        engine = self.engine()
-        engine.start_session(5)
-        engine.scan_once()
-        self.assertTrue(wait_for_state(self.burner.pid, "T"))
-
-        engine.pause(300)
-        engine.scan_once()  # resumes because a pass was handed out
-
-        self.assertTrue(wait_until_running(self.burner.pid))
-        self.assertEqual(0, len(engine.frozen()))
-
-        # While the pass lasts, a scan must not freeze it again.
-        self.assertEqual(0, engine.scan_once())
-        self.assertNotEqual("T", state(self.burner.pid))
 
     def test_a_lease_expires_and_ends_the_session(self):
         engine = self.engine()
@@ -200,18 +115,6 @@ class SessionTests(EngineTestCase):
         self.assertFalse(engine.delegated())
         self.assertEqual(0.0, engine.status()["delegated_ttl"])
 
-    def test_a_lapsed_lease_resumes_what_it_had_frozen(self):
-        engine = self.engine()
-        engine.set_state(True, source="chillfocused", ttl_seconds=30)
-        engine.scan_once()
-        self.assertTrue(wait_for_state(self.burner.pid, "T"))
-
-        # The frontend died: the lease lapses and the next scan resumes everything.
-        engine._clock = lambda: time.time() + 60
-        engine.scan_once()
-
-        self.assertTrue(wait_until_running(self.burner.pid))
-        self.assertEqual(0, len(engine.frozen()))
 
     def test_a_session_without_a_lease_never_expires(self):
         # A manual session (or a frontend that did not ask for a lease) is ended
@@ -236,28 +139,6 @@ class SessionTests(EngineTestCase):
         self.assertIsNone(engine.session())
         self.assertEqual(0, engine.session_state()["remaining"])
 
-    def test_a_pomodoro_resumes_everything_during_its_breaks(self):
-        engine = self.engine(blacklist=[])
-        engine.apply_rules({"names": [self.burner.marker]}, source="plugin-x")
-        engine.start_session(mode="pomodoro", work_minutes=25, break_minutes=5, cycles=2)
-        engine.scan_once()
-        self.assertTrue(wait_for_state(self.burner.pid, "T"))
-
-        # Break time: the applications have to come back. That is the point of one.
-        engine._clock = lambda: time.time() + 25 * 60 + 1
-        engine.scan_once()
-        state = engine.session_state()
-        self.assertEqual("break", state["phase"])
-        self.assertFalse(engine.active(), "a break must not be active")
-        self.assertTrue(wait_until_running(self.burner.pid))
-
-        # Next round: back to work, and the target is suspended again.
-        engine._clock = lambda: time.time() + 30 * 60 + 1
-        engine.scan_once()
-        state = engine.session_state()
-        self.assertEqual("work", state["phase"])
-        self.assertEqual(2, state["cycle"])
-        self.assertTrue(engine.active())
 
     def test_a_finite_pomodoro_stops_after_its_last_round(self):
         engine = self.engine(blacklist=[])
@@ -313,25 +194,14 @@ class SessionTests(EngineTestCase):
         self.assertEqual("work", engine.session_state()["phase"])
         self.assertTrue(engine.active())
 
-    def test_dry_run_touches_nothing(self):
-        engine = self.engine(dry_run=True)
-        engine.start_session(5)
-
-        self.assertEqual(0, engine.scan_once())
-        self.assertNotEqual("T", state(self.burner.pid))
-        self.assertEqual(0, len(engine.frozen()))
-        self.assertFalse(os.path.exists(self.state_path))
-
 
 class RuleTests(EngineTestCase):
     def test_api_rules_replace_the_blacklist(self):
         engine = self.engine(blacklist=[])
 
         engine.apply_rules({"names": [self.burner.marker], "cmdline_substrings": [], "pids": []})
-        engine.start_session(5)
-        engine.scan_once()
 
-        self.assertTrue(wait_for_state(self.burner.pid, "T"))
+        self.assertIn(self.burner.marker, engine.rules().names)
 
     def test_the_built_in_rails_can_never_be_stripped(self):
         engine = self.engine(blacklist=[])
@@ -374,83 +244,6 @@ class RuleTests(EngineTestCase):
         engine.set_state(False, source="pomodoro")
         self.assertFalse(engine.active())
 
-    def test_a_target_that_stops_matching_is_resumed(self):
-        # The rules come from a plugin-like source, so withdrawing *that* source is
-        # what stops the match -- the configuration file is a different source and
-        # is not touched.
-        engine = self.engine(blacklist=[])
-        engine.apply_rules({"names": [self.burner.marker]}, source="plugin-x")
-        engine.start_session(5)
-        engine.scan_once()
-        self.assertTrue(wait_for_state(self.burner.pid, "T"))
-
-        engine.apply_rules({"names": []}, source="plugin-x")
-        engine.scan_once()
-
-        self.assertTrue(wait_until_running(self.burner.pid))
-
-    def test_the_engine_never_suspends_itself(self):
-        engine = self.engine()
-
-        self.assertEqual([], engine._freezable_pids((999_001, 999_002)))
-        self.assertEqual([], engine._freezable_pids((1,)))
-        self.assertEqual([4242], engine._freezable_pids((4242, 999_001)))
-
-
-class RecoveryTests(EngineTestCase):
-    def test_startup_recovery_resumes_what_a_crash_left(self):
-        os.kill(self.burner.pid, signal.SIGSTOP)
-        self.assertTrue(wait_for_state(self.burner.pid, "T"))
-        with open(self.state_path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "version": 1,
-                    "frozen": [
-                        {
-                            "pid": self.burner.pid,
-                            "name": self.burner.marker,
-                            "mode": "pid",
-                            "since": time.time(),
-                            "starttime": starttime(self.burner.pid),
-                            "pids": [self.burner.pid],
-                            "guards": {str(self.burner.pid): starttime(self.burner.pid)},
-                        }
-                    ],
-                },
-                handle,
-            )
-
-        engine = self.engine()
-
-        self.assertEqual(1, engine.recover_frozen())
-        self.assertTrue(wait_until_running(self.burner.pid))
-
-    def test_a_reused_pid_is_never_resumed(self):
-        os.kill(self.burner.pid, signal.SIGSTOP)
-        with open(self.state_path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "version": 1,
-                    "frozen": [
-                        {
-                            "pid": self.burner.pid,
-                            "name": "stale",
-                            "mode": "pid",
-                            "since": time.time(),
-                            "starttime": (starttime(self.burner.pid) or 0) - 1,
-                            "pids": [self.burner.pid],
-                            "guards": {str(self.burner.pid): (starttime(self.burner.pid) or 0) - 1},
-                        }
-                    ],
-                },
-                handle,
-            )
-
-        engine = self.engine()
-
-        self.assertEqual(1, engine.recover_frozen())  # the record is settled...
-        self.assertEqual("T", state(self.burner.pid))  # ...but nobody was signalled
-
 
 class InstallLayoutTests(unittest.TestCase):
     """The CLI has to run from the layout ``scripts/install-focused.sh`` creates."""
@@ -482,8 +275,9 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(8766, config.http.port)
         self.assertEqual("127.0.0.1", config.http.host)
-        self.assertTrue(config.freeze.enabled)
-        self.assertTrue(config.freeze.state_path.endswith("frozen.json"))
+        self.assertTrue(config.enforcement.enabled)
+        self.assertEqual("audit", config.enforcement.mode)
+        self.assertGreaterEqual(config.enforcement.max_per_scan, 1)
         self.assertIn("wineserver", config.rules.protect_names)
 
     def test_only_a_loopback_host_is_accepted(self):
@@ -494,13 +288,17 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(FocusedConfigError):
             Config.from_dict({"http": {"port": 0}})
 
-    def test_an_empty_state_path_is_refused(self):
+    def test_an_unknown_mode_is_refused(self):
         with self.assertRaises(FocusedConfigError):
-            Config.from_dict({"freeze": {"state_path": ""}})
+            Config.from_dict({"enforcement": {"mode": "terminate"}})
+
+    def test_a_zero_scan_cap_is_refused(self):
+        with self.assertRaises(FocusedConfigError):
+            Config.from_dict({"enforcement": {"max_per_scan": 0}})
 
     def test_wrong_types_are_refused_rather_than_coerced(self):
         with self.assertRaises(FocusedConfigError):
-            Config.from_dict({"freeze": {"enabled": "yes"}})
+            Config.from_dict({"enforcement": {"enabled": "yes"}})
         with self.assertRaises(FocusedConfigError):
             Config.from_dict({"blacklist": {"names": "firefox"}})
 
@@ -551,15 +349,6 @@ class PidRuleTests(EngineTestCase):
             engine.apply_rules({"pids": [1]}, source="plugin")
 
 
-    def test_thaw_all_clears_the_handled_cache(self):
-        engine = self.engine()
-        engine._freeze_service._handled[4242] = (None, time.time() + 30)
-
-        engine.thaw_all("test")
-
-        self.assertEqual({}, engine._freeze_service._handled)
-
-
 class ScanTimingTests(EngineTestCase):
     def test_status_reports_scan_latency(self):
         engine = self.engine()
@@ -569,34 +358,6 @@ class ScanTimingTests(EngineTestCase):
 
         self.assertGreaterEqual(summary["last"], 0.0)
         self.assertEqual(1, summary["samples"])
-
-
-class _FakeFreezer:
-    """Enough of Freezer for config/session tests; never signals anything."""
-
-    def __init__(self, entries=None):
-        self._entries = dict(entries or {})
-        self.thawed = 0
-
-    def entries(self):
-        return list(self._entries.values())
-
-    def __len__(self):
-        return len(self._entries)
-
-    def __bool__(self):
-        # FocusedEngine uses ``freezer or Freezer(...)``; an empty fake must
-        # still be recognised as the freezer we handed over.
-        return True
-
-    def ensure_loaded(self):
-        pass
-
-    def thaw_all(self, reason=""):
-        count = len(self._entries)
-        self._entries.clear()
-        self.thawed += count
-        return count
 
 
 class _CollectingAudit:
@@ -634,21 +395,15 @@ class ConfigPersistenceTests(unittest.TestCase):
         config = Config.from_dict(
             {
                 "audit_log": "",
-                "freeze": {
-                    "enabled": True,
-                    "state_path": os.path.join(tmp, "frozen.json"),
-                },
+                "enforcement": {"enabled": True, "mode": "audit"},
             },
             path=path,
         )
         engine = FocusedEngine(
             config,
-            freezer=freezer,
             logger=None,
             uid=os.getuid(),
             self_pid=999_001,
-            self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
-            unified_cgroup2=True,
         )
         return engine, path
 
@@ -683,17 +438,6 @@ class ConfigPersistenceTests(unittest.TestCase):
             loaded = Config.load(path)
             self.assertEqual([], sorted(loaded.rules.names))
 
-    def test_disabling_freeze_releases_the_recorded_targets(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            freezer = _FakeFreezer()
-            engine, _path = self.make_engine(tmp, freezer=freezer)
-            freezer._entries[4242] = object()
-
-            engine.update_config({"freeze": {"enabled": False}})
-
-            self.assertEqual(0, len(freezer))
-            self.assertEqual(1, freezer.thawed)
-
 
 class HeartbeatIdempotencyTests(unittest.TestCase):
     def make_engine(self, tmp):
@@ -701,10 +445,7 @@ class HeartbeatIdempotencyTests(unittest.TestCase):
         config = Config.from_dict(
             {
                 "audit_log": "",
-                "freeze": {
-                    "enabled": True,
-                    "state_path": os.path.join(tmp, "frozen.json"),
-                },
+                "enforcement": {"enabled": True, "mode": "audit"},
             },
             path=path,
         )
@@ -713,8 +454,6 @@ class HeartbeatIdempotencyTests(unittest.TestCase):
             logger=None,
             uid=os.getuid(),
             self_pid=999_001,
-            self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
-            unified_cgroup2=True,
         )
 
     def test_renewing_a_claim_is_not_an_event(self):

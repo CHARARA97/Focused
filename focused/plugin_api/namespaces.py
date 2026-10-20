@@ -13,7 +13,7 @@ from .capabilities import (
     CAP_RULES_READ,
     CAP_SCAN_REQUEST,
     CAP_SESSION_CLAIM,
-    CAP_STATE_FROZEN,
+    CAP_STATE_HISTORY,
     CAP_STATE_READ,
 )
 
@@ -59,9 +59,9 @@ class _StateApi:
         self._api._require(CAP_STATE_READ)
         return self._api._api_status()
 
-    def frozen(self) -> list:
-        self._api._require(CAP_STATE_FROZEN)
-        return self._api._host.plugin_frozen_snapshot(self._api.id)
+    def history(self) -> list:
+        self._api._require(CAP_STATE_HISTORY)
+        return self._api._host.plugin_history_snapshot(self._api.id)
 
     def rules(self) -> Dict[str, Any]:
         return self._api.rules.list()

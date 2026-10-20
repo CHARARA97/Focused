@@ -45,7 +45,7 @@ class PluginServerTestCase(unittest.TestCase):
                 "audit_log": "",
                 "http": {"enabled": True, "host": "127.0.0.1", "port": free_port(), "token": self.token},
                 "blacklist": {"names": []},
-                "freeze": {"enabled": True, "state_path": os.path.join(self._tmp.name, "frozen.json")},
+                "enforcement": {"enabled": True, "mode": "audit"},
                 "plugins_path": self.plugins_path,
             }
         )
@@ -54,8 +54,6 @@ class PluginServerTestCase(unittest.TestCase):
             logger=None,
             uid=os.getuid(),
             self_pid=999_001,
-            self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
-            unified_cgroup2=True,
         )
         self.engine.plugins.path = os.path.join(self._tmp.name, "plugins.json")
         self.server = FocusedServer(
@@ -115,7 +113,7 @@ class SecurePluginTests(PluginServerTestCase):
     def test_a_plugin_token_cannot_patch_config(self):
         _plugin_id, token = self.register("reader")
 
-        self.assertEqual(401, self.call("PATCH", "/config", {"dry_run": True}, token=token)[0])
+        self.assertEqual(401, self.call("PATCH", "/config", {"scan_interval": 1.5}, token=token)[0])
 
     def test_the_application_token_also_works_for_plugins(self):
         plugin_id, _token = self.register("pomodoro")
@@ -419,7 +417,7 @@ class EventTests(PluginServerTestCase):
         again = self.call("GET", "/events?since=%d" % first["next_seq"])[1]
         self.assertEqual([], again["events"])
 
-        self.call("POST", "/thaw", {})
+        self.call("PATCH", "/config", {"scan_interval": 1.5})
         after = self.call("GET", "/events?since=%d" % first["next_seq"])[1]
         self.assertTrue(all(event["seq"] > first["next_seq"] for event in after["events"]))
 
@@ -519,16 +517,17 @@ class ConfigApiTests(PluginServerTestCase):
     def test_patching_settings_applies_immediately(self):
         status, payload = self.call(
             "PATCH", "/config",
-            {"dry_run": True, "scan_interval": 2.5, "session": {"default_minutes": 45, "pause_minutes": 20},
+            {"enforcement": {"mode": "audit"}, "scan_interval": 2.5,
+             "session": {"default_minutes": 45, "pause_minutes": 20},
              "urls": {"patterns": ["reddit.com"]}},
         )
 
         self.assertEqual(200, status)
-        self.assertTrue(payload["dry_run"])
+        self.assertEqual("audit", payload["enforcement"]["mode"])
         self.assertEqual(2.5, payload["scan_interval"])
         self.assertEqual(45, payload["session"]["default_minutes"])
         self.assertEqual(["reddit.com"], payload["urls"]["patterns"])
-        self.assertTrue(self.engine.dry_run)
+        self.assertEqual("audit", self.engine.config.enforcement.mode)
 
     def test_a_bad_value_is_refused(self):
         status, payload = self.call("PATCH", "/config", {"scan_interval": 0.01})

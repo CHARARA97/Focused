@@ -13,7 +13,7 @@ from .capabilities import (
     CAP_RULES_WRITE,
     CAP_SCAN_REQUEST,
     CAP_SESSION_CLAIM,
-    CAP_STATE_FROZEN,
+    CAP_STATE_HISTORY,
     CAP_STATE_READ,
 )
 from .errors import PluginError

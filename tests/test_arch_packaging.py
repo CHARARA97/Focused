@@ -42,7 +42,7 @@ class ArchPackageTests(unittest.TestCase):
         text = (ROOT / "packaging" / "focused.service").read_text(encoding="utf-8")
 
         self.assertIn("ExecStart=/usr/bin/focused", text)
-        self.assertIn("ExecStopPost=/usr/bin/focused", text)
+        self.assertNotIn("--thaw-all", text)
         self.assertIn("WantedBy=default.target", text)
 
     def test_install_message_tells_the_user_to_enable_the_user_service(self):

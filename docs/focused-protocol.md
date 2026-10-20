@@ -172,3 +172,7 @@ GET /api/v1/focus/frozen
 | 跨语言契约（插件 DTO 字段 ⊆ Focused 实际响应） | ✅ 自动校验（`focused/tests/test_plugin_contract.py`） |
 | 浏览器扩展 | ✅ 已实现（`focused-extension/`，32 项 node 测试），端点可指向守护进程或 Focused |
 | **Focused 应用本身** | ✅ 已实现：`focused/`（引擎 + 会话 + 看板 + 协议 + systemd unit），端到端测试见 `focused/tests/test_delegation_e2e.py` |
+
+## Process icons
+
+`GET /api/v1/processes` 的 parallel arrays 新增可选 `icons: string[]`，与 `names` 对齐，值为 32×32 PNG 的 base64；空字符串表示没有图标。旧客户端可忽略该字段。

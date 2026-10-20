@@ -136,6 +136,42 @@ class ProcFSTests(unittest.TestCase):
         self.assertEqual(fs.pids(), [])
         self.assertEqual(fs.snapshot(), [])
 
+    def _write_children(self, pid, by_tid):
+        for tid, text in by_tid.items():
+            directory = os.path.join(self.root, str(pid), "task", str(tid))
+            os.makedirs(directory, exist_ok=True)
+            with open(os.path.join(directory, "children"), "w", encoding="utf-8") as handle:
+                handle.write(text)
+
+    def test_child_pids_is_empty_without_a_task_directory(self):
+        self.assertEqual(self.fs.child_pids(1000), ())
+
+    def test_child_pids_reads_one_thread(self):
+        self._write_children(1000, {1000: "1001 1002\n"})
+        self.assertEqual(self.fs.child_pids(1000), (1001, 1002))
+
+    def test_child_pids_unions_every_thread(self):
+        self._write_children(1000, {1000: "1001", 1002: "1003"})
+        self.assertEqual(self.fs.child_pids(1000), (1001, 1003))
+
+    def test_child_pids_ignores_garbage_tokens(self):
+        self._write_children(1000, {1000: "1001 nonsense 1002\n"})
+        self.assertEqual(self.fs.child_pids(1000), (1001, 1002))
+
+    def test_an_empty_children_file_means_no_children(self):
+        self._write_children(1000, {1000: ""})
+        self.assertEqual(self.fs.child_pids(1000), ())
+
+    def test_live_children_are_unsupported_by_default(self):
+        self.assertFalse(self.fs.supports_live_children())
+
+    def test_live_children_are_detected_when_present(self):
+        directory = os.path.join(self.root, "self", "task", "1")
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "children"), "w", encoding="utf-8") as handle:
+            handle.write("")
+        self.assertTrue(self.fs.supports_live_children())
+
 
 if __name__ == "__main__":
     unittest.main()

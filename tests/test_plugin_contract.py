@@ -65,7 +65,7 @@ class PluginPayloadContractTests(unittest.TestCase):
                 "audit_log": "",
                 "http": {"enabled": True, "host": "127.0.0.1", "port": free_port()},
                 "blacklist": {"names": []},
-                "freeze": {"enabled": True, "state_path": os.path.join(self._tmp.name, "frozen.json")},
+                "enforcement": {"enabled": True, "mode": "audit"},
             }
         )
         self.engine = FocusedEngine(config, logger=None, self_pid=4242)

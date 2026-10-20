@@ -6,8 +6,6 @@ import tempfile
 import unittest
 
 from focused.config import Config
-from focused.core.freezer import Freezer
-from focused.core.procfs import ProcFS
 from focused.plugins import PluginRegistry
 
 
@@ -19,18 +17,9 @@ class FilePermissionTests(unittest.TestCase):
                 {
                     "audit_log": "",
                     "http": {"token": "secret"},
-                    "freeze": {"state_path": os.path.join(tmp, "frozen.json")},
                 }
             )
             config.save(path)
-
-            self.assertEqual(0o600, stat.S_IMODE(os.stat(path).st_mode))
-
-    def test_frozen_state_is_private(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "frozen.json")
-            freezer = Freezer(procfs=ProcFS(), state_path=path, logger=None)
-            freezer._save()
 
             self.assertEqual(0o600, stat.S_IMODE(os.stat(path).st_mode))
 

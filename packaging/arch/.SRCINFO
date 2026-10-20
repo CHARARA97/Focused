@@ -1,7 +1,7 @@
 pkgbase = focused
 	pkgdesc = Suspend distracting applications while you focus, and resume them after
 	pkgver = 0.2.0
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/CHARARA97/Focused
 	install = focused.install
 	arch = any

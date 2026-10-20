@@ -19,7 +19,7 @@ from ..plugin_api import (
     CAP_RULES_WRITE,
     CAP_SCAN_REQUEST,
     CAP_SESSION_CLAIM,
-    CAP_STATE_FROZEN,
+    CAP_STATE_HISTORY,
     CAP_STATE_READ,
     PluginError,
 )
@@ -138,10 +138,10 @@ class PluginGateway:
             self._require(plugin_id, CAP_STATE_READ)
         return self._state.summary(plugin_id or "")
 
-    def plugin_frozen_snapshot(self, plugin_id: Optional[str] = None) -> list:
+    def plugin_history_snapshot(self, plugin_id: Optional[str] = None) -> list:
         if plugin_id is not None:
-            self._require(plugin_id, CAP_STATE_FROZEN)
-        return self._state.frozen()
+            self._require(plugin_id, CAP_STATE_HISTORY)
+        return self._state.history()
 
     # -- scan / events -----------------------------------------------------
 
@@ -152,7 +152,7 @@ class PluginGateway:
             plugin_id,
             "scan.request",
             accepted=bool(report.accepted),
-            frozen=int(report.frozen),
+            killed=int(report.killed),
             reason=report.reason,
         )
         return report

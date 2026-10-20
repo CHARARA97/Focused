@@ -11,13 +11,13 @@ import unittest
 
 from focused.core.matching import matcher_for
 from focused.core.procfs import ProcessInfo
-from focused.core.rules import (
+from focused.core.rules import RuleSet
+from focused.core.decision import (
     ACTION_MATCH,
     ACTION_PROTECT,
     ACTION_SKIP,
     Decision,
     EvalContext,
-    RuleSet,
     cmdline_matches,
     evaluate,
     name_matches,
@@ -119,7 +119,7 @@ def reference_evaluate(target, rules, context):
         guard = rules.pid_guards.get(target.pid)
         rule = "blacklist.pid:" + str(target.pid)
         if guard is None:
-            return Decision(ACTION_SKIP, rule, "pid rule has no reuse guard: refusing to freeze")
+            return Decision(ACTION_SKIP, rule, "pid rule has no reuse guard: refusing to kill")
         if target.starttime is None:
             return Decision(ACTION_SKIP, rule, "starttime unavailable")
         if target.starttime == guard:

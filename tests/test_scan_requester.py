@@ -2,7 +2,7 @@
 
 import unittest
 
-from focused.app.scan import ScanRequester
+from focused.app.scan import ScanRequester, ScanResult
 
 
 class FakeClock:
@@ -20,19 +20,19 @@ class ScanRequesterTests(unittest.TestCase):
 
         def scan():
             calls.append(1)
-            return 3
+            return ScanResult(killed=3)
 
         requester = ScanRequester(scan, clock)
         report = requester.request("plugin-a")
 
         self.assertTrue(report.accepted)
-        self.assertEqual(3, report.frozen)
+        self.assertEqual(3, report.killed)
         self.assertEqual(1, len(calls))
 
     def test_a_second_request_inside_the_interval_is_rate_limited(self):
         clock = FakeClock()
         calls = []
-        requester = ScanRequester(lambda: calls.append(1) or 0, clock, min_interval=1.0)
+        requester = ScanRequester(lambda: calls.append(1) or ScanResult(), clock, min_interval=1.0)
 
         self.assertTrue(requester.request("plugin-a").accepted)
         second = requester.request("plugin-a")
@@ -46,7 +46,7 @@ class ScanRequesterTests(unittest.TestCase):
 
     def test_the_cooldown_is_global_not_per_source(self):
         clock = FakeClock()
-        requester = ScanRequester(lambda: 0, clock)
+        requester = ScanRequester(ScanResult, clock)
 
         self.assertTrue(requester.request("a").accepted)
         # A second plugin cannot multiply the scan work by having a new id.
@@ -54,11 +54,11 @@ class ScanRequesterTests(unittest.TestCase):
 
     def test_to_dict_is_json_shaped(self):
         clock = FakeClock()
-        requester = ScanRequester(lambda: 2, clock)
+        requester = ScanRequester(lambda: ScanResult(killed=2), clock)
         report = requester.request("a")
 
         self.assertEqual(
-            {"accepted": True, "frozen": 2, "reason": "ok"}, report.to_dict()
+            {"accepted": True, "killed": 2, "reason": "ok"}, report.to_dict()
         )
 
 

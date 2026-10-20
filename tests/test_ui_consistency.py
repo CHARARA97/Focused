@@ -107,7 +107,7 @@ class DashboardHealthTests(unittest.TestCase):
         self.assertIn("function renderHealth", script)
         self.assertIn("state.health", script)
         self.assertIn("scan_failures", script)
-        self.assertIn("recovery_failures", script)
+        self.assertIn("kill_failures", script)
 
 
 class DashboardConsistencyTests(unittest.TestCase):

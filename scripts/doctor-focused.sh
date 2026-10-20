@@ -435,10 +435,18 @@ except Exception:
     print("absent")
     raise SystemExit(0)
 
+# The cgroup planner is called by the freeze service, not by engine.py.
+# Keep the old engine.py fallback for an older packaged layout.
+try:
+    from focused.app import freeze as freeze_service
+    caller_source = inspect.getsource(freeze_service)
+except Exception:
+    caller_source = inspect.getsource(engine)
+
 accepts = "allowed_pids" in inspect.signature(cgroupfs.plan_for).parameters
-calls = "allowed_pids" in inspect.getsource(engine)
+calls = "allowed_pids" in caller_source
 counts = hasattr(Freezer, "frozen_count")
-uses = "frozen_count()" in inspect.getsource(engine)
+uses = "frozen_count()" in inspect.getsource(engine) or "frozen_count()" in caller_source
 print("ok" if (accepts == calls and counts == uses) else "mixed")
 PY
 )"

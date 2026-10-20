@@ -13,7 +13,7 @@ from focused.plugin_api import (
     CAP_RULES_WRITE,
     CAP_SCAN_REQUEST,
     CAP_SESSION_CLAIM,
-    CAP_STATE_FROZEN,
+    CAP_STATE_HISTORY,
     CAP_STATE_READ,
     PluginError,
     SAFE_CAPABILITIES,
@@ -24,7 +24,7 @@ def make_engine(tmp):
     config = Config.from_dict(
         {
             "audit_log": "",
-            "freeze": {"enabled": True, "state_path": os.path.join(tmp, "frozen.json")},
+            "enforcement": {"enabled": True, "mode": "audit"},
             "registry_path": os.path.join(tmp, "plugins.json"),
         }
     )
@@ -33,8 +33,6 @@ def make_engine(tmp):
         logger=None,
         uid=os.getuid(),
         self_pid=999_001,
-        self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
-        unified_cgroup2=True,
     )
 
 
@@ -114,12 +112,12 @@ class GatewayTests(unittest.TestCase):
     def test_state_and_events_are_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine, gateway = self.gateway(tmp)
-            self.register(engine, "observer", (CAP_STATE_READ, CAP_STATE_FROZEN, CAP_EVENTS_READ))
+            self.register(engine, "observer", (CAP_STATE_READ, CAP_STATE_HISTORY, CAP_EVENTS_READ))
 
             summary = gateway.plugin_status_snapshot("observer")
             self.assertIn("active", summary)
             self.assertIn("health", summary)
-            self.assertEqual([], gateway.plugin_frozen_snapshot("observer"))
+            self.assertEqual([], gateway.plugin_history_snapshot("observer"))
             self.assertIsInstance(gateway.recent_events("observer", 0, 10), list)
 
     def test_dangerous_capabilities_are_not_granted_by_default(self):

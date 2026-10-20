@@ -45,7 +45,7 @@ class ServerTestCase(unittest.TestCase):
                 },
                 "blacklist": {"names": ["firefox"]},
                 "urls": {"patterns": ["reddit.com", "*twitter*"]},
-                "freeze": {"enabled": True, "state_path": os.path.join(self._tmp.name, "frozen.json")},
+                "enforcement": {"enabled": True, "mode": "audit"},
             }
         )
         self.engine = FocusedEngine(
@@ -53,8 +53,6 @@ class ServerTestCase(unittest.TestCase):
             logger=None,
             uid=os.getuid(),
             self_pid=999_001,
-            self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
-            unified_cgroup2=True,
         )
         self.server = FocusedServer(
             self.engine, host="127.0.0.1", port=self.port_hint, token=self.token or ""
@@ -82,13 +80,13 @@ class ServerTestCase(unittest.TestCase):
 
 
 class StateProtocolTests(ServerTestCase):
-    def test_a_heartbeat_cannot_flip_dry_run(self):
+    def test_a_heartbeat_cannot_flip_the_mode(self):
         self.call(
             "POST", "/focus/state",
-            {"active": True, "dry_run": True, "ttl_seconds": 30},
+            {"active": True, "mode": "kill", "ttl_seconds": 30},
         )
 
-        self.assertFalse(self.engine.dry_run)
+        self.assertEqual("audit", self.engine.config.enforcement.mode)
 
     def test_status_reports_the_engine(self):
         status, payload = self.call("GET", "/status")
@@ -147,7 +145,8 @@ class StateProtocolTests(ServerTestCase):
         status, payload = self.call("POST", "/scan", {})
 
         self.assertEqual(200, status)
-        self.assertIn("frozen", payload)
+        self.assertIn("killed", payload)
+        self.assertIn("by_reason", payload)
 
     def test_a_pomodoro_can_be_started_with_its_own_durations(self):
         status, payload = self.call(
@@ -239,19 +238,17 @@ class StateProtocolTests(ServerTestCase):
         self.assertEqual(400, status)
         self.assertFalse(payload["ok"])
 
-    def test_the_frozen_list_starts_empty_and_is_a_list(self):
-        status, payload = self.call("GET", "/focus/frozen")
+    def test_the_recent_list_starts_empty_and_is_a_list(self):
+        status, payload = self.call("GET", "/focus/recent")
 
         self.assertEqual(200, status)
         self.assertEqual(0, payload["count"])
-        self.assertEqual([], payload["frozen"])
+        self.assertEqual([], payload["recent"])
 
-    def test_thaw_all_answers_even_with_nothing_frozen(self):
-        status, payload = self.call("POST", "/thaw", {})
+    def test_thaw_is_gone(self):
+        status, _payload = self.call("POST", "/thaw", {})
 
-        self.assertEqual(200, status)
-        self.assertEqual(0, payload["thawed"])
-        self.assertIn("detail", payload)
+        self.assertEqual(404, status)
 
 
 class RuleProtocolTests(ServerTestCase):
@@ -311,10 +308,10 @@ class DashboardTests(ServerTestCase):
         self.assertEqual(200, response.status)
         self.assertIn("Focused", body)
         # The dashboard is a real UI: navigation, a plugin page, the session
-        # buttons and the escape hatch all have to be there.
+        # buttons and the live clock all have to be there.
         for needle in ('id="tab-plugins"', 'id="tab-apps"', 'id="modes"', 'data-mode="pomodoro"',
                        'data-mode="stopwatch"', 'id="workMinutes"', 'id="breakMinutes"',
-                       "renderSessionClock", "renderHeaderActions", "立即恢复全部",
+                       "renderSessionClock", "renderHeaderActions", "tickClock", "已终止",
                        "/focus/session", "屏蔽模式", "保护模式", "details.fold"):
             self.assertIn(needle, body, needle)
 

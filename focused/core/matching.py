@@ -157,6 +157,9 @@ class RuleMatcher:
             return "protect.cmdline:" + substring
         return None
 
+    def protects_names(self, candidates: Tuple[str, ...]) -> bool:
+        return self._protect_names.match(candidates) is not None
+
 
 def _first_substring(substrings: Sequence[str], text: str) -> Optional[str]:
     for substring in substrings:

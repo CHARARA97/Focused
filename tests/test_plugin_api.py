@@ -18,7 +18,7 @@ class FakeHost:
         self.releases = 0
         self.logs = []
         self.scans = []
-        self.frozen_calls = 0
+        self.history_calls = 0
         self.events = []
 
     def replace_plugin_rules(self, plugin_id, payload):
@@ -45,17 +45,17 @@ class FakeHost:
     def plugin_status_snapshot(self, plugin_id=None):
         return {"ok": True, "active": True}
 
-    def plugin_frozen_snapshot(self, plugin_id=None):
-        self.frozen_calls += 1
+    def plugin_history_snapshot(self, plugin_id=None):
+        self.history_calls += 1
         return [{"name": "firefox"}]
 
     def request_plugin_scan(self, plugin_id):
         self.scans.append(plugin_id)
-        return {"accepted": True, "frozen": 1, "reason": "ok"}
+        return {"accepted": True, "killed": 1, "reason": "ok"}
 
     def recent_events(self, plugin_id, since, limit):
         self.events.append((plugin_id, since, limit))
-        return [{"kind": "freeze"}]
+        return [{"kind": "enforce.kill"}]
 
     def log_plugin(self, plugin_id, level, message):
         self.logs.append((plugin_id, level, message))
@@ -170,15 +170,15 @@ class PluginApiUnitTests(unittest.TestCase):
         api.session.release()
         self.assertEqual({"active": True, "my_claim": {"ttl": 30}}, api.session.status())
         self.assertEqual({"ok": True, "active": True}, api.state.summary())
-        self.assertEqual([{"name": "firefox"}], api.state.frozen())
+        self.assertEqual([{"name": "firefox"}], api.state.history())
         self.assertEqual(
-            {"accepted": True, "frozen": 1, "reason": "ok"}, api.scan.request()
+            {"accepted": True, "killed": 1, "reason": "ok"}, api.scan.request()
         )
-        self.assertEqual([{"kind": "freeze"}], api.events.recent(0, 5))
+        self.assertEqual([{"kind": "enforce.kill"}], api.events.recent(0, 5))
 
         self.assertEqual(1, len(host.added))
         self.assertEqual(1, len(host.removed))
-        self.assertEqual(1, host.frozen_calls)
+        self.assertEqual(1, host.history_calls)
         self.assertEqual(["p"], host.scans)
         self.assertEqual([("p", 0, 5)], host.events)
 
@@ -204,7 +204,7 @@ class PluginApiEngineTests(unittest.TestCase):
         config = Config.from_dict(
             {
                 "audit_log": "",
-                "freeze": {"enabled": True, "state_path": os.path.join(tmp, "frozen.json")},
+                "enforcement": {"enabled": True, "mode": "audit"},
                 "plugins_path": plugins_dir,
                 "registry_path": os.path.join(tmp, "plugins.json"),
             }
@@ -214,8 +214,6 @@ class PluginApiEngineTests(unittest.TestCase):
             logger=None,
             uid=os.getuid(),
             self_pid=999_001,
-            self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
-            unified_cgroup2=True,
         )
         failed = engine.load_plugins(plugins_dir)
         return engine, failed

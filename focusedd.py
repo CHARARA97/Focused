@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
 """focused -- the standalone Focused application.
 
-It finds the applications on your blacklist and *suspends* them while a focus
-session runs, then resumes them when the session ends.  Nothing is ever
-terminated.
+It finds the applications on your blacklist and kills them while a focus
+session runs.  Nothing is resumed: a killed application stays dead until you
+start it again.
 
 Three ways to run a session:
 
-    focused --session 25        # start here, run 25 minutes, resume, exit
+    focused --session 25        # start here, run 25 minutes, exit
     focused                     # run until SIGINT/SIGTERM (driven by its API)
     curl -XPOST .../focus/state -d '{"active": true}'   # driven by ChillFocus
 
-Config lives in ``~/.config/focused/config.json`` and the record of what is
-suspended in ``~/.local/share/focused/frozen.json``.  The latter is what makes a
-crash recoverable: ``focused --thaw-all`` resumes everything it lists, and the
-application does that by itself on every start.
+Config lives in ``~/.config/focused/config.json``.  ``enforcement.mode`` decides
+whether a match is killed or only recorded: it defaults to ``audit``.
 
     focused --write-default-config ~/.config/focused/config.json
     focused --status            # ask a running instance what it is doing
-    focused --frozen            # what is suspended right now (works offline)
-    focused --thaw-all          # resume everything (works offline; idempotent)
+    focused --once              # one scan, print the report, exit
+    focused --audit             # record matches without killing anything
 """
 
 from __future__ import annotations
@@ -49,7 +47,6 @@ from focused.config import Config, FocusedConfigError  # noqa: E402
 from focused.engine import FocusedEngine  # noqa: E402
 from focused.server import API_PREFIX, FocusedServer  # noqa: E402
 from focused.core.audit import AuditLog  # noqa: E402
-from focused.core.freezer import thaw_all_from_state  # noqa: E402
 
 EXIT_OK = 0
 EXIT_CONFIG_ERROR = 2
@@ -64,9 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="focused",
         description=(
-            "Standalone focus application: suspend the applications on your "
-            "blacklist while a session runs, resume them afterwards. Loopback "
-            "HTTP API for ChillFocus and the browser extension."
+            "Standalone focus application: kill the applications on your "
+            "blacklist while a session runs. Loopback HTTP API for ChillFocus "
+            "and the browser extension."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -78,22 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="print the effective configuration as JSON and exit")
     parser.add_argument("--status", action="store_true",
                         help="query a running instance and print its status, then exit")
-    parser.add_argument("--frozen", action="store_true",
-                        help="list what is suspended right now (no daemon needed)")
-    parser.add_argument("--thaw-all", action="store_true",
-                        help="resume everything recorded and exit (works offline, "
-                             "safe to repeat; systemd runs this after a crash)")
     parser.add_argument("--session", type=float, metavar="MINUTES",
                         help="start a session of this many minutes and run until it ends")
     parser.add_argument("--once", action="store_true",
-                        help="perform a single scan and exit; thaw what it froze "
-                             "unless --keep-frozen is given")
-    parser.add_argument("--keep-frozen", action="store_true",
-                        help="with --once, leave what was frozen suspended")
+                        help="perform a single scan, print the report and exit")
     parser.add_argument("--benchmark-scan", type=int, nargs="?", const=20, metavar="N",
-                        help="measure N scans of the real /proc and exit (no freezing)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="log what would be frozen without suspending anything")
+                        help="measure N scans of the real /proc and exit (no killing)")
+    parser.add_argument("--audit", action="store_true",
+                        help="record what would be killed without signalling anything")
     parser.add_argument("--host", help="override http.host (loopback only)")
     parser.add_argument("--port", type=int, help="override http.port")
     parser.add_argument("--no-http", action="store_true", help="do not start the HTTP API")
@@ -121,8 +110,8 @@ def setup_logging(level_name: str, quiet: bool = False) -> logging.Logger:
 
 
 def apply_overrides(config: Config, args: argparse.Namespace) -> Config:
-    if args.dry_run:
-        config.dry_run = True
+    if args.audit:
+        config.enforcement.mode = "audit"
     if args.host:
         config.http.host = args.host
     if args.port is not None:
@@ -161,7 +150,7 @@ def benchmark_scan(config: Config, rounds: int) -> int:
     import statistics
 
     from focused.core.procfs import ProcFS
-    from focused.core.rules import EvalContext, evaluate
+    from focused.core.decision import EvalContext, evaluate
 
     procfs = ProcFS()
     rules = config.rules
@@ -289,39 +278,12 @@ def main(argv=None) -> int:
         ))
         return EXIT_OK
 
-    if args.frozen:
-        from focused.core.freezer import list_from_state
-
-        entries = list_from_state(config.freeze.state_path)
-        print(json.dumps(
-            {
-                "ok": True,
-                "state_path": config.freeze.state_path,
-                "count": len(entries),
-                "frozen": [entry.to_dict() for entry in entries],
-            },
-            indent=2, ensure_ascii=False, sort_keys=True,
-        ))
-        return EXIT_OK
-
-    if args.thaw_all:
-        # Deliberately self-contained: this is what systemd runs when the daemon
-        # died, so it may not talk to the daemon.
-        logger.info("resuming everything recorded in %s", config.freeze.state_path)
-        count = thaw_all_from_state(config.freeze.state_path, logger=logger)
-        print(json.dumps({"ok": True, "thawed": count}, indent=2, ensure_ascii=False))
-        return EXIT_OK
-
     engine = build_engine(config, logger)
     failed_plugins = engine.load_plugins(config.plugins_path)
     for failure in failed_plugins:
         logger.error("plugin %s failed to load: %s", failure["id"], failure["error"])
     if engine.addons():
         logger.info("in-process plugins: %s", ", ".join(engine.addons()))
-    recovered = engine.recover_frozen()
-    if recovered:
-        logger.warning("resumed %d target(s) left suspended by a previous run", recovered)
-
     for problem in config.warnings:
         logger.warning(problem)
 
@@ -329,22 +291,13 @@ def main(argv=None) -> int:
         engine.start_session(args.session)
 
     if args.once:
-        frozen = engine.scan_once()
+        result = engine.scan_once()
         if not engine.active():
             logger.info("no session is running, so nothing was scanned; pass --session")
-        resumed = 0
-        if not args.keep_frozen and len(engine.frozen()):
-            resumed = engine.thaw_all("once")
         print(json.dumps(
-            {"ok": True, "frozen": frozen, "resumed": resumed, "status": engine.status()},
+            {"ok": True, "scan": result.to_wire(), "status": engine.status()},
             indent=2, ensure_ascii=False, sort_keys=True,
         ))
-        if args.keep_frozen and len(engine.frozen()):
-            print(
-                "note: %d target(s) are still suspended (--keep-frozen); run "
-                "`focused --thaw-all` to resume them" % len(engine.frozen()),
-                file=sys.stderr,
-            )
         return EXIT_OK
 
     stop_event = threading.Event()
@@ -353,10 +306,6 @@ def main(argv=None) -> int:
         logger.info("received %s, shutting down", signal.Signals(signum).name)
         stop_event.set()
 
-    def handle_thaw(_signum, _frame):
-        logger.warning("received SIGUSR1, resuming every suspended target")
-        engine.thaw_all("signal")
-
     signal.signal(signal.SIGINT, handle_stop)
     signal.signal(signal.SIGTERM, handle_stop)
     for name in ("SIGHUP",):
@@ -364,11 +313,6 @@ def main(argv=None) -> int:
             signal.signal(getattr(signal, name), lambda *_: None)
         except (AttributeError, ValueError):
             pass
-    try:
-        signal.signal(signal.SIGUSR1, handle_thaw)
-    except (AttributeError, ValueError):
-        pass
-
     server = None
     if config.http.enabled:
         server = FocusedServer(
@@ -405,8 +349,6 @@ def main(argv=None) -> int:
     finally:
         stop_event.set()
         scan_thread.join(timeout=5)
-        if engine.thaw_all("shutdown"):
-            logger.info("resumed every suspended target before exiting")
         if server is not None:
             server.stop()
         if getattr(engine, "audit", None) is not None:

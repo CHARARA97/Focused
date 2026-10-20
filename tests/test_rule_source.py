@@ -11,7 +11,7 @@ from focused.engine import FocusedEngine
 def make_engine(tmp, **extra):
     payload = {
         "audit_log": "",
-        "freeze": {"enabled": True, "state_path": os.path.join(tmp, "frozen.json")},
+        "enforcement": {"enabled": True, "mode": "audit"},
     }
     payload.update(extra)
     config = Config.from_dict(payload)
@@ -20,8 +20,6 @@ def make_engine(tmp, **extra):
         logger=None,
         uid=os.getuid(),
         self_pid=999_001,
-        self_cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/focusedd.service",
-        unified_cgroup2=True,
     )
 
 

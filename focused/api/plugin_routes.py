@@ -69,7 +69,7 @@ def post_plugin(engine, path: str, body: Dict[str, Any]) -> Tuple[int, Dict[str,
             webhook_url=webhook_url,
             plugin_id=str(body.get("id") or slugify(str(body.get("name") or "plugin"))),
         )
-        engine._emit("plugin", source=record.id, detail="registered (%s)" % record.kind)
+        engine.emit("plugin", source=record.id, detail="registered (%s)" % record.kind)
         return 200, {
             "ok": True,
             "id": record.id,
@@ -107,7 +107,7 @@ def post_plugin(engine, path: str, body: Dict[str, Any]) -> Tuple[int, Dict[str,
             {
                 "ok": report.accepted,
                 "accepted": report.accepted,
-                "frozen": report.frozen,
+                "killed": report.killed,
                 "reason": report.reason,
             },
         )

@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List
 
-from ..config import SESSION_MODES
+from ..config import ENFORCEMENT_MODES, SESSION_MODES
 from ..core import urlfilter
 from ..core.rules import RuleSet
+from .config_ports import ConfigPorts
 
 
 def _config_blacklist(config: Any) -> Dict[str, Any]:
@@ -34,30 +35,11 @@ class ConfigService:
         self,
         config: Any,
         rules: Any,
-        *,
-        dry_run: Callable[[], bool],
-        set_dry_run: Callable[[bool], bool],
-        set_freeze_enabled: Callable[[bool], None],
-        thaw_all: Callable[[str], int],
-        apply_rules: Callable[..., Any],
-        sources: Callable[[], Dict[str, Any]],
-        set_url_patterns: Callable[..., List[str]],
-        config_dict: Callable[[], Dict[str, Any]],
-        emit: Callable[..., Any],
-        set_http_token: Optional[Callable[[str], None]] = None,
+        ports: ConfigPorts,
     ) -> None:
         self._config = config
         self._rules = rules
-        self._dry_run = dry_run
-        self._set_dry_run = set_dry_run
-        self._set_freeze_enabled = set_freeze_enabled
-        self._thaw_all = thaw_all
-        self._apply_rules = apply_rules
-        self._sources = sources
-        self._set_url_patterns = set_url_patterns
-        self._config_dict = config_dict
-        self._emit = emit
-        self._set_http_token = set_http_token
+        self._ports = ports
 
     def update(self, patch: Dict[str, Any]) -> Dict[str, Any]:
         patch = patch or {}
@@ -68,7 +50,7 @@ class ConfigService:
         # 1. Apply everything to a candidate Config.  Nothing runtime-visible
         # changes until every validation has passed.
         if "dry_run" in patch:
-            candidate.dry_run = bool(patch["dry_run"])
+            warnings.append("dry_run is gone; use enforcement.mode")
         if "scan_interval" in patch:
             value = float(patch["scan_interval"])
             if not math.isfinite(value) or not 0.1 <= value <= 3600.0:
@@ -102,15 +84,21 @@ class ConfigService:
             for forbidden in ("port", "host", "enabled"):
                 if forbidden in http:
                     warnings.append("http.%s needs a restart" % forbidden)
-        if isinstance(patch.get("freeze"), dict):
-            freeze = patch["freeze"]
-            if "enabled" in freeze:
-                candidate.freeze.enabled = bool(freeze["enabled"])
-            if "max_per_scan" in freeze:
-                candidate.freeze.max_per_scan = max(1, int(freeze["max_per_scan"]))
-            for forbidden in ("state_path", "use_units", "confirm_timeout_ms"):
-                if forbidden in freeze:
-                    warnings.append("freeze.%s needs a restart" % forbidden)
+        if isinstance(patch.get("enforcement"), dict):
+            enforcement = patch["enforcement"]
+            if "enabled" in enforcement:
+                candidate.enforcement.enabled = bool(enforcement["enabled"])
+            if "max_per_scan" in enforcement:
+                candidate.enforcement.max_per_scan = max(1, int(enforcement["max_per_scan"]))
+            if "mode" in enforcement:
+                mode = str(enforcement["mode"]).strip().lower()
+                if mode not in ENFORCEMENT_MODES:
+                    raise ValueError(
+                        "mode must be one of: %s" % ", ".join(ENFORCEMENT_MODES)
+                    )
+                if mode == "kill" and patch.get("confirm") != "kill":
+                    raise ValueError("switching to kill requires confirm=kill")
+                candidate.enforcement.mode = mode
         if isinstance(patch.get("urls"), dict) and "patterns" in patch["urls"]:
             patterns = patch["urls"]["patterns"]
             if isinstance(patterns, (str, bytes)):
@@ -137,17 +125,14 @@ class ConfigService:
         # 2. Commit.  Rules first: if a PID vanished between preview and apply,
         # it is still before any Config field has changed.
         if prepared_rules is not None:
-            self._apply_rules(prepared_rules, source="config")
-            candidate.rules = RuleSet.from_dict(self._sources()["config"])
+            self._ports.apply_rules(prepared_rules, source="config")
+            candidate.rules = RuleSet.from_dict(self._ports.sources()["config"])
 
         self._config.__dict__.update(candidate.__dict__)
-        self._set_dry_run(candidate.dry_run)
-        self._set_freeze_enabled(candidate.freeze.enabled)
-        if not candidate.freeze.enabled:
-            self._thaw_all("freeze-disabled")
-        if self._set_http_token is not None:
-            self._set_http_token(candidate.http.token)
-        self._set_url_patterns(candidate.urls.patterns, source="config")
+        self._ports.set_enforcement_enabled(candidate.enforcement.enabled)
+        if isinstance(patch.get("http"), dict) and "token" in patch["http"]:
+            self._ports.set_http_token(candidate.http.token)
+        self._ports.set_url_patterns(candidate.urls.patterns, source="config")
 
         # 3. Persist.  A save failure is a warning, not a rollback: the running
         # process has already committed the same values.
@@ -159,7 +144,7 @@ class ConfigService:
         else:
             warnings.append("no config path: changes apply until Focused restarts")
 
-        payload = self._config_dict()
+        payload = self._ports.config_dict()
         payload["warnings"] = warnings
-        self._emit("config", detail="configuration updated")
+        self._ports.emit("config", detail="configuration updated")
         return payload

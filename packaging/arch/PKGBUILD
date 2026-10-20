@@ -5,7 +5,7 @@
 # It is not an AUR submission; build it from a checkout with `makepkg -si`.
 pkgname=focused
 pkgver=0.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Suspend distracting applications while you focus, and resume them after"
 arch=('any')
 url="https://github.com/CHARARA97/Focused"

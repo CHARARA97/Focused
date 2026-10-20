@@ -39,12 +39,12 @@ class EventBusTests(unittest.TestCase):
             lambda pid: frozenset({CAP_EVENTS_READ}) if pid == "capable" else frozenset(),
         )
 
-        recorded = bus.record("freeze", pid=42, name="firefox")
+        recorded = bus.record("enforce.kill", pid=42, name="firefox")
         self.assertEqual(1, recorded["seq"])
         self.assertEqual([], capable.seen)
         self.assertEqual([recorded], bus.since(0))
 
-        emitted = bus.emit("freeze", pid=42, name="firefox")
+        emitted = bus.emit("enforce.kill", pid=42, name="firefox")
         self.assertEqual([emitted], capable.seen)
         self.assertEqual([], silent.seen)
         self.assertEqual(2, bus.seq)
@@ -56,6 +56,25 @@ class EventBusTests(unittest.TestCase):
 
         self.assertEqual([3], [event["seq"] for event in bus.since(2)])
         self.assertEqual(1, len(bus.since(0, 1)))
+
+    def test_structured_fields_survive_the_ring_buffer(self):
+        bus = self.make([], lambda pid: frozenset())
+        bus.emit(
+            "enforce.kill",
+            pid=42,
+            name="firefox",
+            starttime=7,
+            pids=[42, 43],
+            tree=2,
+            reason="blacklist.name:firefox",
+        )
+
+        event = bus.since(0)[0]
+
+        self.assertEqual(7, event["starttime"])
+        self.assertEqual([42, 43], event["pids"])
+        self.assertEqual(2, event["tree"])
+        self.assertEqual("blacklist.name:firefox", event["reason"])
 
     def test_a_failing_addon_is_reported_and_does_not_break_dispatch(self):
         failures = []

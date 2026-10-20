@@ -21,8 +21,9 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from ..config import load_protect_names
 from ..core import urlfilter
 from ..core.rules import RuleProblem, RuleRejected, RuleSet
+from .rule_entries import entry_for, guards_for, prepare, urls_of
+from .rule_merge import merge_sources, merge_values, subtract_values
 
-MAX_RULES_PER_SOURCE = 5000
 
 RuleChanged = Callable[[str, Optional[Dict[str, Any]], RuleSet], None]
 LogFn = Callable[[str, str], None]
@@ -55,48 +56,7 @@ def _pids(values: Any) -> List[int]:
     return out
 
 
-def _urls(values: Any) -> List[str]:
-    if values is None:
-        return []
-    if isinstance(values, (str, bytes)):
-        raise RuleRejected([RuleProblem("rules.type", "url_patterns must be a sequence")])
-    try:
-        items = iter(values)
-    except TypeError as exc:
-        raise RuleRejected(
-            [RuleProblem("rules.type", "url_patterns must be a sequence")]
-        ) from exc
-    out: List[str] = []
-    for item in items:
-        text = str(item).strip()
-        if text:
-            out.append(text)
-    return out
 
-
-def _merge(current: Iterable[Any], added: Iterable[Any], convert) -> List[Any]:
-    out = list(convert(current))
-    for value in convert(added):
-        if value not in out:
-            out.append(value)
-    return out
-
-
-def _subtract(current: Iterable[Any], removed: Iterable[Any], convert) -> List[Any]:
-    drop = set(convert(removed))
-    return [value for value in convert(current) if value not in drop]
-
-
-def _entry(incoming: RuleSet, guards: Dict[int, int], urls: Iterable[str]) -> Dict[str, Any]:
-    return {
-        "names": sorted(incoming.names),
-        "cmdline_substrings": list(incoming.cmdline_substrings),
-        "pids": sorted(incoming.pids),
-        "pid_guards": dict(guards),
-        "protect_names": sorted(incoming.protect_names),
-        "protect_cmdline_substrings": list(incoming.protect_cmdline_substrings),
-        "url_patterns": [str(item) for item in urls if str(item).strip()],
-    }
 
 
 class RuleSourceService:
@@ -118,9 +78,11 @@ class RuleSourceService:
         self._sources: Dict[str, Dict[str, Any]] = {}
         # The config file is just another source.  Fill guards for live PIDs; a
         # vanished config PID is kept but will fail closed when evaluated.
-        self._sources["config"] = _entry(
+        self._sources["config"] = entry_for(
             initial_rules,
-            self._guards_for(
+            guards_for(
+                self._procfs,
+                self._log,
                 initial_rules,
                 dict(initial_rules.pid_guards),
                 strict=False,
@@ -128,7 +90,8 @@ class RuleSourceService:
             ),
             url_patterns,
         )
-        self._merged = self._recompute_locked()
+        self._version = 0
+        self._merged = self._publish(self._recompute_locked())
         self._url_patterns = urlfilter.sanitize(list(url_patterns))
 
     # -- reads -------------------------------------------------------------
@@ -136,6 +99,15 @@ class RuleSourceService:
     def merged(self) -> RuleSet:
         with self._lock:
             return self._merged
+
+    def version(self) -> int:
+        with self._lock:
+            return self._version
+
+    def _publish(self, merged: RuleSet) -> RuleSet:
+        self._merged = merged
+        self._version += 1
+        return merged
 
     def sources(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
@@ -178,86 +150,13 @@ class RuleSourceService:
         return self._prepare(source, payload)
 
     def _prepare(self, source: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        payload = payload or {}
-        for key in (
-            "names",
-            "cmdline_substrings",
-            "pids",
-            "protect_names",
-            "protect_cmdline_substrings",
-        ):
-            if isinstance(payload.get(key), (str, bytes)):
-                raise RuleRejected(
-                    [RuleProblem("rules.type", "%s must be a sequence" % key)]
-                )
-        incoming = RuleSet.from_dict(payload)
-        problems = list(incoming.problems())
-        total = (
-            len(incoming.names)
-            + len(incoming.cmdline_substrings)
-            + len(incoming.pids)
+        return prepare(
+            payload,
+            self._current(source),
+            procfs=self._procfs,
+            log=self._log,
+            source=source,
         )
-        if total > MAX_RULES_PER_SOURCE:
-            problems.append(
-                RuleProblem(
-                    "rules.too-many",
-                    "a source may contain at most %d rules" % MAX_RULES_PER_SOURCE,
-                )
-            )
-
-        with self._lock:
-            current = dict(self._sources.get(source) or {})
-        current_guards = {
-            int(pid): guard for pid, guard in (current.get("pid_guards") or {}).items()
-        }
-        guards: Dict[int, int] = {}
-        for pid in sorted(incoming.pids):
-            if pid <= 1:
-                problems.append(
-                    RuleProblem("rule.pid-invalid", "pid 0/1 is never a target", str(pid))
-                )
-                continue
-            if pid in current_guards:
-                # The guard was valid when the entry was added.  A process may
-                # have exited since; re-reading /proc here would either fail the
-                # whole edit or, worse, adopt a reused PID.  Keep the old guard:
-                # evaluate() fails closed if the process is gone or reused.
-                provided = incoming.pid_guards.get(pid)
-                if provided is not None and provided != current_guards[pid]:
-                    problems.append(
-                        RuleProblem(
-                            "rule.pid-guard",
-                            "guard conflicts with the existing source entry",
-                            str(pid),
-                        )
-                    )
-                    continue
-                guards[pid] = current_guards[pid]
-
-        new_pids = frozenset(pid for pid in incoming.pids if pid not in current_guards)
-        if new_pids:
-            new_rule = RuleSet(
-                pids=new_pids,
-                pid_guards={
-                    pid: incoming.pid_guards[pid]
-                    for pid in new_pids
-                    if pid in incoming.pid_guards
-                },
-            )
-            guards.update(
-                self._guards_for(
-                    new_rule,
-                    dict(new_rule.pid_guards),
-                    strict=True,
-                    source=source,
-                    problems=problems,
-                )
-            )
-        if problems:
-            raise RuleRejected(problems)
-
-        urls = _urls(payload.get("url_patterns"))
-        return _entry(incoming, guards, urls)
 
     def add(
         self,
@@ -271,16 +170,16 @@ class RuleSourceService:
     ) -> RuleSet:
         current = self._current(source)
         payload = {
-            "names": _merge(current.get("names"), names, _strings),
-            "cmdline_substrings": _merge(
+            "names": merge_values(current.get("names"), names, _strings),
+            "cmdline_substrings": merge_values(
                 current.get("cmdline_substrings"), cmdline_substrings, _strings
             ),
-            "pids": _merge(current.get("pids"), pids, _pids),
+            "pids": merge_values(current.get("pids"), pids, _pids),
             "pid_guards": dict(current.get("pid_guards") or ()),
-            "protect_names": _merge(
+            "protect_names": merge_values(
                 current.get("protect_names"), protect_names, _strings
             ),
-            "protect_cmdline_substrings": _merge(
+            "protect_cmdline_substrings": merge_values(
                 current.get("protect_cmdline_substrings"),
                 protect_cmdline_substrings,
                 _strings,
@@ -300,7 +199,7 @@ class RuleSourceService:
         protect_cmdline_substrings: Iterable[Any] = (),
     ) -> RuleSet:
         current = self._current(source)
-        remaining = _subtract(current.get("pids"), pids, _pids)
+        remaining = subtract_values(current.get("pids"), pids, _pids)
         remaining_set = set(remaining)
         guards = {
             int(pid): guard
@@ -308,16 +207,16 @@ class RuleSourceService:
             if int(pid) in remaining_set
         }
         payload = {
-            "names": _subtract(current.get("names"), names, _strings),
-            "cmdline_substrings": _subtract(
+            "names": subtract_values(current.get("names"), names, _strings),
+            "cmdline_substrings": subtract_values(
                 current.get("cmdline_substrings"), cmdline_substrings, _strings
             ),
             "pids": remaining,
             "pid_guards": guards,
-            "protect_names": _subtract(
+            "protect_names": subtract_values(
                 current.get("protect_names"), protect_names, _strings
             ),
-            "protect_cmdline_substrings": _subtract(
+            "protect_cmdline_substrings": subtract_values(
                 current.get("protect_cmdline_substrings"),
                 protect_cmdline_substrings,
                 _strings,
@@ -336,7 +235,7 @@ class RuleSourceService:
     def set_url_patterns(self, patterns: Iterable[str], source: str = "config") -> List[str]:
         with self._lock:
             entry = dict(self._sources.get(source) or {})
-            entry["url_patterns"] = _urls(patterns)
+            entry["url_patterns"] = urls_of(patterns)
             self._sources[source] = entry
             self._recompute_locked()
             return list(self._url_patterns)
@@ -361,81 +260,8 @@ class RuleSourceService:
             return
         self._on_changed(source, entry, merged)
 
-    def _guards_for(
-        self,
-        incoming: RuleSet,
-        existing: Dict[int, Any],
-        *,
-        strict: bool,
-        source: str,
-        problems: Optional[List[RuleProblem]] = None,
-    ) -> Dict[int, int]:
-        problems = problems if problems is not None else []
-        guards: Dict[int, int] = {}
-        for pid in sorted(incoming.pids):
-            if pid <= 1:
-                problems.append(
-                    RuleProblem("rule.pid-invalid", "pid 0/1 is never a target", str(pid))
-                )
-                continue
-            current = self._procfs.starttime(pid)
-            if current is None:
-                problems.append(
-                    RuleProblem("rule.pid-gone", "pid is gone or unreadable", str(pid))
-                )
-                if not strict and self._log is not None:
-                    self._log(
-                        "warning",
-                        "config pid %s is gone; the rule will fail closed" % pid,
-                    )
-                continue
-            provided = existing.get(pid)
-            if provided is not None and provided != current:
-                problems.append(
-                    RuleProblem(
-                        "rule.pid-reused",
-                        "starttime does not match the live process",
-                        str(pid),
-                    )
-                )
-                continue
-            guards[pid] = current
-        return guards
-
     def _recompute_locked(self) -> RuleSet:
-        names = set()
-        cmdline: List[str] = []
-        pids = set()
-        guards: Dict[int, int] = {}
-        protect_names = {name.lower() for name in load_protect_names()}
-        protect_substrings: List[str] = []
-        urls: List[str] = []
-
-        for entry in self._sources.values():
-            names |= set(entry.get("names") or ())
-            for text in entry.get("cmdline_substrings") or ():
-                if text not in cmdline:
-                    cmdline.append(text)
-            pids |= set(entry.get("pids") or ())
-            guards.update(entry.get("pid_guards") or {})
-            protect_names |= set(entry.get("protect_names") or ())
-            for text in entry.get("protect_cmdline_substrings") or ():
-                if text not in protect_substrings:
-                    protect_substrings.append(text)
-            for pattern in entry.get("url_patterns") or ():
-                if pattern not in urls:
-                    urls.append(pattern)
-
-        merged = RuleSet.from_dict(
-            {
-                "names": sorted(names),
-                "cmdline_substrings": cmdline,
-                "pids": sorted(pids),
-                "pid_guards": {str(pid): guard for pid, guard in guards.items()},
-                "protect_names": sorted(protect_names),
-                "protect_cmdline_substrings": sorted(protect_substrings),
-            }
-        )
-        self._merged = merged
-        self._url_patterns = urlfilter.sanitize(urls)
-        return merged
+        merged = merge_sources(self._sources, protect_names=load_protect_names())
+        self._publish(merged.rules)
+        self._url_patterns = urlfilter.sanitize(merged.urls)
+        return merged.rules

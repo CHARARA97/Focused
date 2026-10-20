@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import unittest
 
-from focused.core.rules import (
+from focused.core.decision import (
     ACTION_PROTECT,
     ACTION_SKIP,
     EvalContext,
+    evaluate,
+    name_matches,
+)
+from focused.core.rules import (
     RuleRejected,
     RuleSet,
-    evaluate,
     is_catch_all_pattern,
-    name_matches,
     normalize_many,
 )
 from tests.helpers import SELF_PGID, SELF_PID, SELF_PPID, UID, make_proc
@@ -198,21 +200,21 @@ class ProtectReasonTests(unittest.TestCase):
     """The settings UI asks "would the protect list shield this?"."""
 
     def test_reports_the_matching_protect_name(self):
-        from focused.core.rules import protect_reason
+        from focused.core.decision import protect_reason
 
         rules = RuleSet(protect_names=frozenset({"wineserver"}))
         proc = make_proc(comm="wineserver", exe="/usr/bin/wineserver")
         self.assertTrue(protect_reason(proc, rules).startswith("protect.name:"))
 
     def test_reports_a_protect_cmdline_match(self):
-        from focused.core.rules import protect_reason
+        from focused.core.decision import protect_reason
 
         rules = RuleSet(protect_cmdline_substrings=("keep-me",))
         proc = make_proc(cmdline=("firefox", "keep-me"))
         self.assertTrue(protect_reason(proc, rules).startswith("protect.cmdline:"))
 
     def test_returns_none_for_an_unprotected_process(self):
-        from focused.core.rules import protect_reason
+        from focused.core.decision import protect_reason
 
         self.assertIsNone(protect_reason(make_proc(comm="firefox"), RuleSet()))
 

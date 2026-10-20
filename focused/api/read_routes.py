@@ -32,9 +32,9 @@ def get_core(engine, path: str, query: Dict[str, list]) -> Tuple[int, Dict[str, 
         return get_plugin(engine, path)
     if path == API_PREFIX + "/focus":
         return 200, engine.focus_state()
-    if path == API_PREFIX + "/focus/frozen":
-        frozen = engine.frozen_list()
-        return 200, {"ok": True, "count": len(frozen), "frozen": frozen}
+    if path == API_PREFIX + "/focus/recent":
+        recent = engine.recent_list()
+        return 200, {"ok": True, "count": len(recent), "recent": recent}
     return 404, {"ok": False, "error": "no such endpoint: %s" % path}
 
 

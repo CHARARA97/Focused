@@ -8,54 +8,35 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List
 
-from ..core.rules import ACTION_PROTECT, evaluate
+from .process_view import ProcessView
+from .runtime_info import RuntimeInfo
 
 
 class StatusService:
     def __init__(
         self,
         *,
-        clock: Callable[[], float],
         rules: Any,
         session: Any,
-        freeze: Any,
+        enforcer: Any,
         scan: Any,
-        registry: Any,
         health: Any,
         stats: Dict[str, Any],
-        recent: Any,
         config: Any,
-        procfs: Any,
-        uid: Any,
-        self_pid: int,
-        self_cgroup: Any,
-        unified_cgroup2: bool,
-        dry_run: Callable[[], bool],
-        freeze_enabled: Callable[[], bool],
-        event_seq: Callable[[], int],
-        addons: Callable[[], List[str]],
-        version: str,
+        runtime: RuntimeInfo,
+        processes: ProcessView,
+        plugins: Any,
     ) -> None:
-        self._clock = clock
         self._rules = rules
         self._session = session
-        self._freeze = freeze
+        self._enforcer = enforcer
         self._scan = scan
-        self._registry = registry
         self._health = health
         self._stats = stats
-        self._recent = recent
         self._config = config
-        self._procfs = procfs
-        self._uid = uid
-        self._self_pid = self_pid
-        self._self_cgroup = self_cgroup
-        self._unified_cgroup2 = unified_cgroup2
-        self._dry_run = dry_run
-        self._freeze_enabled = freeze_enabled
-        self._event_seq = event_seq
-        self._addons = addons
-        self._version = version
+        self._runtime = runtime
+        self._processes = processes
+        self._plugins = plugins
 
     # -- flat frontend view ------------------------------------------------
 
@@ -76,7 +57,7 @@ class StatusService:
         }
 
     def focus_state(self) -> Dict[str, Any]:
-        entries = self._freeze.frozen()
+        recent = self.recent_list()
         return {
             "ok": True,
             "active": self._session.active(),
@@ -90,35 +71,34 @@ class StatusService:
             "delegated_until": self._session.nearest_deadline(),
             "delegated_ttl": self._session.nearest_ttl(),
             "delegated_source": self._session.describe(),
-            "dry_run": self._dry_run(),
+            "enforcement_mode": self._config.enforcement.mode,
+            "enforcement_enabled": bool(self._config.enforcement.enabled),
             **self.session_payload_fields(),
-            "frozen_count": self._freeze.frozen_count(),
-            "frozen_recorded_count": len(self._freeze.recorded_pids()),
+            "killed_total": int(self._stats.get("killed") or 0),
             "degraded": self._health.degraded,
             "scan_failures": self._health.scan_failures,
             "last_scan_error": self._health.last_scan_error,
-            "frozen_names": [entry.name for entry in entries],
-            "frozen_units": [entry.unit for entry in entries if entry.unit],
-            "frozen_total": int(self._stats.get("frozen") or 0),
-            "recent_names": [item.get("name", "") for item in list(self._recent)],
+            "recent_names": [item["name"] for item in recent],
+            "recent_counts": [int(item["count"]) for item in recent],
+            "recent_last_at": [float(item["last_at"]) for item in recent],
+            "recent_rules": [str(item["rule"]) for item in recent],
             "protect_count": len(self._rules.merged().protect_names),
-            "pid": int(self._self_pid or 0),
-            "version": self._version,
+            "pid": int(self._runtime.pid or 0),
+            "version": self._runtime.version,
         }
 
-    def frozen_list(self) -> List[Dict[str, Any]]:
+    def recent_list(self) -> List[Dict[str, Any]]:
         return [
             {
-                "name": entry.name,
-                "pid": entry.pid,
-                "mode": entry.mode,
-                "unit": entry.unit,
-                "cgroup": entry.cgroup,
-                "since": entry.since,
-                "reason": entry.reason,
-                "pids": list(entry.pids),
+                "name": episode.name,
+                "rule": episode.rule,
+                "count": episode.count,
+                "roots": episode.roots,
+                "first_at": episode.first_at,
+                "last_at": episode.last_at,
+                "duration_s": episode.duration_s,
             }
-            for entry in self._freeze.frozen()
+            for episode in self._enforcer.episodes()
         ]
 
     # -- full status -------------------------------------------------------
@@ -128,7 +108,7 @@ class StatusService:
         claims = self._session.claims()
         return {
             "ok": True,
-            "version": self._version,
+            "version": self._runtime.version,
             "active": self._session.active(),
             "manual_session": self._session.manual_session_active(),
             "delegated": self._session.delegated(),
@@ -140,11 +120,11 @@ class StatusService:
             "session_state": self._session.session_state(),
             **self.session_payload_fields(),
             "pause_until": self._session.pause_until(),
-            "dry_run": self._dry_run(),
-            "freeze_enabled": self._freeze_enabled(),
-            "unified_cgroup2": self._unified_cgroup2,
-            "self_cgroup": self._self_cgroup or "",
-            "state_path": self._config.freeze.state_path,
+            "enforcement": {
+                "enabled": bool(self._config.enforcement.enabled),
+                "mode": self._config.enforcement.mode,
+                "max_per_scan": int(self._config.enforcement.max_per_scan),
+            },
             "blacklist": {
                 "names": sorted(rules.names),
                 "cmdline_substrings": list(rules.cmdline_substrings),
@@ -152,14 +132,12 @@ class StatusService:
             },
             "protect_count": len(rules.protect_names),
             "url_patterns": self._rules.url_patterns(),
-            "frozen_count": self._freeze.frozen_count(),
-            "frozen_recorded_count": len(self._freeze.recorded_pids()),
+            "killed_total": int(self._stats.get("killed") or 0),
             "degraded": self._health.degraded,
             "scan_failures": self._health.scan_failures,
             "last_scan_error": self._health.last_scan_error,
-            "frozen_names": [entry.name for entry in self._freeze.frozen()],
-            "frozen": self.frozen_list(),
-            "recent": list(self._recent),
+            "recent": self.recent_list(),
+            "scan_report": self._scan.last_result().to_wire(),
             "scan_ms": self._scan.scan_ms(),
             "health": self._health.to_dict(),
             "stats": dict(self._stats),
@@ -169,113 +147,16 @@ class StatusService:
                 + len(entry.get("cmdline_substrings") or ())
                 for source, entry in self._rules.sources().items()
             },
-            "plugins": self.plugin_payloads(),
-            "addons": self._addons(),
-            "event_seq": self._event_seq(),
+            "plugins": self._plugins.payloads(),
+            "addons": self._runtime.addons(),
+            "event_seq": self._runtime.event_seq(),
             "plugins_path": getattr(self._config, "plugins_path", ""),
-        }
-
-    def plugin_payloads(self) -> List[Dict[str, Any]]:
-        now = self._clock()
-        claims = self._session.claims()
-        live = self._session.live()
-        out: List[Dict[str, Any]] = []
-        for record in self._registry.list():
-            payload = record.to_public_dict()
-            payload.update(
-                {
-                    "enabled": record.status == "enabled",
-                    "last_seen_ago": round(max(0.0, now - record.last_seen), 1)
-                    if record.last_seen
-                    else None,
-                    "session_claim": claims.get(record.id),
-                    "session_live": record.id in live,
-                }
-            )
-            out.append(payload)
-        return out
-
-    # -- config view -------------------------------------------------------
-
-    def config_dict(self) -> Dict[str, Any]:
-        config = self._config
-        source = self._rules.sources().get("config") or {}
-        return {
-            "ok": True,
-            "path": config.path or "",
-            "dry_run": self._dry_run(),
-            "scan_interval": config.scan_interval,
-            "blacklist": {
-                "names": sorted(source.get("names") or ()),
-                "cmdline_substrings": list(source.get("cmdline_substrings") or ()),
-                "pids": sorted(source.get("pids") or ()),
-            },
-            "protect": {
-                "names": sorted(source.get("protect_names") or ()),
-                "cmdline_substrings": list(source.get("protect_cmdline_substrings") or ()),
-            },
-            "urls": {"patterns": self._rules.url_patterns()},
-            "session": {
-                "mode": config.session.mode,
-                "default_minutes": config.session.default_minutes,
-                "pause_minutes": config.session.pause_minutes,
-                "pomodoro_work_minutes": config.session.pomodoro_work_minutes,
-                "pomodoro_break_minutes": config.session.pomodoro_break_minutes,
-                "pomodoro_cycles": config.session.pomodoro_cycles,
-            },
-            "session_state": self._session.session_state(),
-            "http": {
-                "enabled": config.http.enabled,
-                "host": config.http.host,
-                "port": config.http.port,
-                "token_set": bool(config.http.token),
-            },
-            "freeze": {
-                "enabled": config.freeze.enabled,
-                "max_per_scan": config.freeze.max_per_scan,
-                "use_units": config.freeze.use_units,
-                "state_path": config.freeze.state_path,
-            },
-            "plugins_path": getattr(config, "plugins_path", ""),
-            "protected_count": len(self._rules.merged().protect_names),
         }
 
     # -- process picker ----------------------------------------------------
 
     def visible_processes(self, limit: int = 400) -> List[Dict[str, Any]]:
-        counts: Dict[str, int] = {}
-        shielded: Dict[str, str] = {}
-        rules = self._rules.merged()
-        context = self._freeze.eval_context()
-        for proc in self._procfs.snapshot():
-            if proc.is_kernel_thread or proc.is_zombie:
-                continue
-            if self._uid is not None and proc.uid is not None and proc.uid != self._uid:
-                continue
-            name = proc.comm or proc.exe_basename
-            if not name:
-                continue
-            counts[name] = counts.get(name, 0) + 1
-            if name not in shielded:
-                decision = evaluate(proc, rules, context)
-                if decision.action == ACTION_PROTECT:
-                    shielded[name] = decision.rule
-        items = [
-            {
-                "name": name,
-                "count": counts[name],
-                "protected": name in shielded,
-                "protect_rule": shielded.get(name, ""),
-            }
-            for name in sorted(counts)
-        ]
-        return items[: max(1, int(limit or 400))]
+        return self._processes.list(limit)
 
     def visible_process_arrays(self, limit: int = 400) -> Dict[str, Any]:
-        items = self.visible_processes(limit)
-        return {
-            "names": [item["name"] for item in items],
-            "counts": [int(item["count"]) for item in items],
-            "protected_flags": [bool(item["protected"]) for item in items],
-            "protect_rules": [item["protect_rule"] for item in items],
-        }
+        return self._processes.arrays(limit)

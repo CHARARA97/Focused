@@ -1,32 +1,46 @@
-"""Focused configuration: rules, freeze settings, the browser list, the session.
+"""Focused configuration: the model, its validation and its persistence.
 
-Focused is a standalone application, so it keeps its own files under
-``~/.config/focused`` and ``~/.local/share/focused`` and never reads ChillFocus's
-config.  The rule engine underneath lives in ``focused.core`` (procfs, cgroup
-rules, the freezer, the rule evaluator): one copy of the dangerous half, covered
-by the engine's own tests.
+The file layout, the typed readers and the error type live next to it
+(``config_io``, ``config_parse``, ``config_errors``); this module owns the
+model and the `load` / `save` lifecycle.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .config_errors import FocusedConfigError
+from .config_io import (
+    config_dir,
+    data_dir,
+    default_audit_path,
+    default_config_path,
+    load_protect_names,
+    protect_names_path,
+    read_json,
+    write_json,
+)
+from .config_parse import (
+    bool_field,
+    enforcement_mode,
+    float_field,
+    int_field,
+    int_list_field,
+    object_field,
+    session_mode,
+    str_field,
+    str_list_field,
+)
 from .core.protect import DEFAULT_PROTECT_NAMES
 from .core.rules import RuleSet
+from .domain.policy import ENFORCEMENT_MODES
+from .domain.session_timer import SESSION_MODES
 
-APP_NAME = "focused"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 LOG_LEVELS = ("debug", "info", "warning", "error")
-
-
-class FocusedConfigError(Exception):
-    """Raised when Focused's own configuration cannot be trusted."""
-
 
 @dataclass
 class HttpConfig:
@@ -37,13 +51,12 @@ class HttpConfig:
     token: str = ""
 
 
+
 @dataclass
-class FreezeConfig:
+class EnforcementConfig:
     enabled: bool = True
+    mode: str = "audit"
     max_per_scan: int = 20
-    confirm_timeout_ms: int = 1500
-    use_units: bool = True
-    state_path: str = ""
 
 
 @dataclass
@@ -70,11 +83,10 @@ class UrlConfig:
 @dataclass
 class Config:
     http: HttpConfig = field(default_factory=HttpConfig)
-    freeze: FreezeConfig = field(default_factory=FreezeConfig)
+    enforcement: EnforcementConfig = field(default_factory=EnforcementConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
     urls: UrlConfig = field(default_factory=UrlConfig)
     scan_interval: float = 1.0
-    dry_run: bool = False
     #: In-process plugins: ``~/.config/focused/plugins/*.py`` by default.
     plugins_path: str = ""
     #: Where the plugin registry is written.  Deliberately *not* the same path as
@@ -90,32 +102,23 @@ class Config:
 
     @staticmethod
     def config_dir() -> str:
-        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
-            os.path.expanduser("~"), ".config"
-        )
-        return os.path.join(base, APP_NAME)
+        return config_dir()
 
     @staticmethod
     def data_dir() -> str:
-        base = os.environ.get("XDG_DATA_HOME") or os.path.join(
-            os.path.expanduser("~"), ".local", "share"
-        )
-        return os.path.join(base, APP_NAME)
+        return data_dir()
 
     @classmethod
     def default_path(cls) -> str:
-        override = os.environ.get("FOCUSED_CONFIG")
-        if override:
-            return os.path.expanduser(override)
-        return os.path.join(cls.config_dir(), "config.json")
+        return default_config_path()
 
     @classmethod
     def default_audit_path(cls) -> str:
-        return os.path.join(cls.data_dir(), "audit.jsonl")
+        return default_audit_path()
 
     @classmethod
-    def protect_names_path(cls) -> Path:
-        return Path(cls.config_dir()) / "protect_names.txt"
+    def protect_names_path(cls):
+        return protect_names_path()
 
     @classmethod
     def defaults(cls) -> "Config":
@@ -123,9 +126,7 @@ class Config:
             audit_log=cls.default_audit_path(),
             plugins_path=os.path.join(cls.config_dir(), "plugins"),
             registry_path=os.path.join(cls.data_dir(), "plugins.json"),
-            freeze=FreezeConfig(
-                state_path=os.path.join(cls.data_dir(), "frozen.json")
-            ),
+            enforcement=EnforcementConfig(),
             rules=RuleSet(protect_names=load_protect_names()),
         )
 
@@ -142,77 +143,69 @@ class Config:
                 % resolved
             )
             return base
-        try:
-            with open(resolved, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except json.JSONDecodeError as exc:
-            raise FocusedConfigError("%s is not valid JSON: %s" % (resolved, exc)) from exc
-        if not isinstance(data, dict):
-            raise FocusedConfigError("%s must contain a JSON object" % resolved)
-        config = cls.from_dict(data, path=resolved)
+        config = cls.from_dict(read_json(resolved), path=resolved)
         return config
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], path: Optional[str] = None) -> "Config":
         base = cls.defaults()
-        http_raw = _obj(data, "http")
-        freeze_raw = _obj(data, "freeze")
-        session_raw = _obj(data, "session")
-        urls_raw = _obj(data, "urls")
-        blacklist = _obj(data, "blacklist")
-        protect = _obj(data, "protect")
+        http_raw = object_field(data, "http")
+        enforcement_raw = object_field(data, "enforcement")
+        legacy = data.get("freeze")
+        legacy_warning = (
+            "the freeze section is gone; its settings were ignored"
+            if legacy is not None
+            else ""
+        )
+        session_raw = object_field(data, "session")
+        urls_raw = object_field(data, "urls")
+        blacklist = object_field(data, "blacklist")
+        protect = object_field(data, "protect")
 
         config = cls(
             http=HttpConfig(
-                enabled=_bool(http_raw, "enabled", True),
-                host=_str(http_raw, "host", base.http.host),
-                port=_int(http_raw, "port", base.http.port),
-                token=_str(http_raw, "token", ""),
+                enabled=bool_field(http_raw, "enabled", True),
+                host=str_field(http_raw, "host", base.http.host),
+                port=int_field(http_raw, "port", base.http.port),
+                token=str_field(http_raw, "token", ""),
             ),
-            freeze=FreezeConfig(
-                enabled=_bool(freeze_raw, "enabled", True),
-                max_per_scan=_int(freeze_raw, "max_per_scan", 20),
-                confirm_timeout_ms=_int(freeze_raw, "confirm_timeout_ms", 1500),
-                use_units=_bool(freeze_raw, "use_units", True),
-                state_path=_str(
-                    freeze_raw,
-                    "state_path",
-                    os.path.join(cls.data_dir(), "frozen.json"),
-                ),
+            warnings=[legacy_warning] if legacy_warning else [],
+            enforcement=EnforcementConfig(
+                enabled=bool_field(enforcement_raw, "enabled", True),
+                mode=enforcement_mode(enforcement_raw, "mode", "audit"),
+                max_per_scan=int_field(enforcement_raw, "max_per_scan", 20),
             ),
             session=SessionConfig(
-                mode=_session_mode(session_raw, "mode", "countdown"),
-                default_minutes=_int(session_raw, "default_minutes", 25),
-                pause_minutes=_int(session_raw, "pause_minutes", 10),
-                pomodoro_work_minutes=_int(session_raw, "pomodoro_work_minutes", 25),
-                pomodoro_break_minutes=_int(session_raw, "pomodoro_break_minutes", 5),
-                pomodoro_cycles=_int(session_raw, "pomodoro_cycles", 4),
+                mode=session_mode(session_raw, "mode", "countdown"),
+                default_minutes=int_field(session_raw, "default_minutes", 25),
+                pause_minutes=int_field(session_raw, "pause_minutes", 10),
+                pomodoro_work_minutes=int_field(session_raw, "pomodoro_work_minutes", 25),
+                pomodoro_break_minutes=int_field(session_raw, "pomodoro_break_minutes", 5),
+                pomodoro_cycles=int_field(session_raw, "pomodoro_cycles", 4),
             ),
-            urls=UrlConfig(patterns=_str_list(urls_raw, "patterns")),
-            scan_interval=_float(data, "scan_interval", base.scan_interval),
-            plugins_path=_str(
+            urls=UrlConfig(patterns=str_list_field(urls_raw, "patterns")),
+            scan_interval=float_field(data, "scan_interval", base.scan_interval),
+            plugins_path=str_field(
                 data, "plugins_path", os.path.join(cls.config_dir(), "plugins")
             ),
-            registry_path=_str(
+            registry_path=str_field(
                 data, "registry_path", os.path.join(cls.data_dir(), "plugins.json")
             ),
-            dry_run=_bool(data, "dry_run", False),
-            log_level=_str(data, "log_level", base.log_level),
-            audit_log=_str(data, "audit_log", base.audit_log),
-            warnings=[],
+            log_level=str_field(data, "log_level", base.log_level),
+            audit_log=str_field(data, "audit_log", base.audit_log),
             path=path,
         )
 
         protect_names = set(base.rules.protect_names)
-        protect_names |= {name.lower() for name in _str_list(protect, "names")}
+        protect_names |= {name.lower() for name in str_list_field(protect, "names")}
         config.rules = RuleSet.from_dict(
             {
-                "names": _str_list(blacklist, "names"),
-                "cmdline_substrings": _str_list(blacklist, "cmdline_substrings"),
-                "pids": _int_list(blacklist, "pids"),
+                "names": str_list_field(blacklist, "names"),
+                "cmdline_substrings": str_list_field(blacklist, "cmdline_substrings"),
+                "pids": int_list_field(blacklist, "pids"),
                 "pid_guards": {},
                 "protect_names": sorted(protect_names),
-                "protect_cmdline_substrings": _str_list(
+                "protect_cmdline_substrings": str_list_field(
                     protect, "cmdline_substrings"
                 ),
             }
@@ -234,15 +227,12 @@ class Config:
             raise FocusedConfigError(
                 "scan_interval must be a finite number in [0.1, 3600]"
             )
-        if self.freeze.max_per_scan < 1:
-            raise FocusedConfigError("freeze.max_per_scan must be >= 1")
-        if self.freeze.confirm_timeout_ms < 100:
-            raise FocusedConfigError("freeze.confirm_timeout_ms must be >= 100")
-        if not self.freeze.state_path:
+        if self.enforcement.mode not in ENFORCEMENT_MODES:
             raise FocusedConfigError(
-                "freeze.state_path must not be empty: without it a crash could leave "
-                "applications frozen forever"
+                "enforcement.mode must be one of: %s" % ", ".join(ENFORCEMENT_MODES)
             )
+        if self.enforcement.max_per_scan < 1:
+            raise FocusedConfigError("enforcement.max_per_scan must be >= 1")
         if self.session.default_minutes < 1:
             raise FocusedConfigError("session.default_minutes must be >= 1")
         problems = self.rules.problems()
@@ -262,17 +252,14 @@ class Config:
                 "token": self.http.token,
             },
             "scan_interval": self.scan_interval,
-            "dry_run": self.dry_run,
             "plugins_path": self.plugins_path,
             "registry_path": self.registry_path,
             "log_level": self.log_level,
             "audit_log": self.audit_log,
-            "freeze": {
-                "enabled": self.freeze.enabled,
-                "max_per_scan": self.freeze.max_per_scan,
-                "confirm_timeout_ms": self.freeze.confirm_timeout_ms,
-                "use_units": self.freeze.use_units,
-                "state_path": self.freeze.state_path,
+            "enforcement": {
+                "enabled": self.enforcement.enabled,
+                "mode": self.enforcement.mode,
+                "max_per_scan": self.enforcement.max_per_scan,
             },
             "session": {
                 "mode": self.session.mode,
@@ -296,101 +283,5 @@ class Config:
 
     def save(self, path: Optional[str] = None) -> str:
         target = os.path.expanduser(path) if path else (self.path or self.default_path())
-        parent = os.path.dirname(target)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = target + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(self.to_dict(), handle, indent=2, ensure_ascii=False, sort_keys=True)
-            handle.write("\n")
-        # The file contains http.token and plugin-facing settings; keep it private
-        # even if an older version wrote it 0644.
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, target)
-        self.path = target
-        return target
-
-
-def load_protect_names() -> frozenset:
-    """Built-in rails plus whatever the user added to ``protect_names.txt``."""
-    names = {name.lower() for name in DEFAULT_PROTECT_NAMES}
-    path = Config.protect_names_path()
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                entry = line.strip()
-                if entry and not entry.startswith("#"):
-                    names.add(entry.lower())
-    except OSError:
-        pass
-    return frozenset(names)
-
-
-# ---------------------------------------------------------------------------
-# typed readers
-# ---------------------------------------------------------------------------
-
-
-def _obj(data: Dict[str, Any], key: str) -> Dict[str, Any]:
-    value = data.get(key)
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise FocusedConfigError("%s must be an object" % key)
-    return value
-
-
-#: The three session shapes the app offers.
-SESSION_MODES = ("countdown", "pomodoro", "stopwatch")
-
-
-def _session_mode(data: Dict[str, Any], key: str, default: str) -> str:
-    """A session mode that we actually implement, or the default."""
-    value = data.get(key)
-    if isinstance(value, str) and value.strip().lower() in SESSION_MODES:
-        return value.strip().lower()
-    return default
-
-
-def _bool(data: Dict[str, Any], key: str, default: bool) -> bool:
-    value = data.get(key, default)
-    if isinstance(value, bool):
-        return value
-    raise FocusedConfigError("%s.%s must be true or false" % ("config", key))
-
-
-def _int(data: Dict[str, Any], key: str, default: int) -> int:
-    value = data.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise FocusedConfigError("%s must be an integer" % key)
-    return value
-
-
-def _float(data: Dict[str, Any], key: str, default: float) -> float:
-    value = data.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise FocusedConfigError("%s must be a number" % key)
-    return float(value)
-
-
-def _str(data: Dict[str, Any], key: str, default: str) -> str:
-    value = data.get(key, default)
-    if not isinstance(value, str):
-        raise FocusedConfigError("%s must be a string" % key)
-    return value
-
-
-def _str_list(data: Dict[str, Any], key: str) -> List[str]:
-    value = data.get(key) or []
-    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-        raise FocusedConfigError("%s must be an array of strings" % key)
-    return [item.strip() for item in value if item.strip()]
-
-
-def _int_list(data: Dict[str, Any], key: str) -> List[int]:
-    value = data.get(key) or []
-    if not isinstance(value, list) or any(
-        isinstance(item, bool) or not isinstance(item, int) for item in value
-    ):
-        raise FocusedConfigError("%s must be an array of integers" % key)
-    return list(value)
+        self.path = write_json(target, self.to_dict())
+        return self.path
